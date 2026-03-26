@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+purchases.json
+state.json
+config_backup.txt
+*.log
