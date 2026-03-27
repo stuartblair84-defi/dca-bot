@@ -153,7 +153,14 @@ def run_daemon() -> None:
     """Schedule run_once() daily at EXECUTION_TIME_UTC and loop forever."""
     log.info(f"Daemon mode -- scheduled daily at {EXECUTION_TIME_UTC} UTC  DRY_RUN={DRY_RUN}")
 
+    def _reschedule(new_time: str) -> None:
+        schedule.clear()
+        schedule.every().day.at(new_time).do(run_once)
+        log.info(f"Job rescheduled to {new_time} UTC")
+        log.info(f"  Next run: {schedule.next_run()}")
+
     telegram_bot.start_background_bot()
+    telegram_bot.register_reschedule_fn(_reschedule)
     schedule.every().day.at(EXECUTION_TIME_UTC).do(run_once)
 
     log.info("Waiting for next scheduled run ...")

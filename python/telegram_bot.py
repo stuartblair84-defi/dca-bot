@@ -5,11 +5,16 @@
 #  Background long-polling thread + inline keyboard menu.
 #  Only responds to TELEGRAM_CHAT_ID from .env.
 #  No external telegram library — raw Bot API via requests.
+#
+#  All command handlers run in daemon threads so the
+#  poll loop is never blocked by network or file I/O.
 # ─────────────────────────────────────────────
 
 import calendar
+import importlib
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -22,6 +27,22 @@ load_dotenv(Path(__file__).parent / ".env")
 
 log = logging.getLogger("dca-bot.telegram")
 
+# ── Config key schema ─────────────────────────
+# key -> (VAR_NAME, type, min, max)
+# types: "float", "int", "bool", "hhmm"
+_CONFIG_SCHEMA: dict[str, tuple] = {
+    "budget":             ("MONTHLY_BUDGET",    "float", 10.0,  10000.0),
+    "reserve_pct":        ("RESERVE_PCT",        "float", 0.10,  0.80),
+    "reserve_threshold":  ("RESERVE_THRESHOLD",  "float", 0.30,  0.95),
+    "reserve_max_months": ("RESERVE_MAX_MONTHS", "int",   1,     12),
+    "no_buy_threshold":   ("NO_BUY_THRESHOLD",   "float", 0.10,  0.80),
+    "pool_cap_x":         ("POOL_CAP_X",         "float", 1.0,   15.0),
+    "use_reserve":        ("USE_RESERVE",         "bool",  None,  None),
+    "no_buy_zone":        ("NO_BUY_ZONE",         "bool",  None,  None),
+    "dry_run":            ("DRY_RUN",             "bool",  None,  None),
+    "execution_time":     ("EXECUTION_TIME_UTC",  "hhmm",  None,  None),
+}
+
 
 # ── Bot class ─────────────────────────────────
 
@@ -33,8 +54,8 @@ class TelegramBot:
         self._running = False
         self._thread: threading.Thread | None = None
         self._lock    = threading.Lock()
-        # Pending pause confirm — set when /pause is issued
         self._pending_pause: dict | None = None  # {'expires_at': float}
+        self._pending_set:   dict | None = None  # {'var', 'new_val', 'new_str', 'key', 'expires_at'}
 
     # ── Telegram API ──────────────────────────
 
@@ -107,13 +128,16 @@ class TelegramBot:
                 return
             self._handle_callback(cb)
 
-    # ── Message routing ───────────────────────
+    # ── Message routing (non-blocking) ────────
 
     def _handle_message(self, msg: dict) -> None:
         text = msg.get("text", "").strip()
         if not text.startswith("/"):
             return
-        cmd = text.split()[0].lower().split("@")[0]
+        parts = text.split()
+        cmd   = parts[0].lower().split("@")[0]
+        args  = parts[1:]
+
         _ROUTES = {
             "/start":   self._cmd_menu,
             "/menu":    self._cmd_menu,
@@ -121,19 +145,26 @@ class TelegramBot:
             "/report":  self._cmd_report,
             "/signals": self._cmd_signals,
             "/history": self._cmd_history,
+            "/config":  self._cmd_config,
             "/pause":   self._cmd_pause,
             "/resume":  self._cmd_resume,
             "/help":    self._cmd_help,
         }
-        handler = _ROUTES.get(cmd)
-        if handler:
+
+        def _run() -> None:
             try:
-                handler()
+                if cmd == "/set":
+                    self._cmd_set(args)
+                elif cmd in _ROUTES:
+                    _ROUTES[cmd]()
+                # Unknown commands silently ignored
             except Exception as exc:
                 log.error(f"Command {cmd} error: {exc}", exc_info=True)
-                self.send(f"Error: {exc}")
+                self.send(f"Error running {cmd}: {exc}")
 
-    # ── Callback routing ──────────────────────
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ── Callback routing (non-blocking) ───────
 
     def _handle_callback(self, cb: dict) -> None:
         query_id = cb["id"]
@@ -145,19 +176,26 @@ class TelegramBot:
             "cmd_report":  self._cmd_report,
             "cmd_signals": self._cmd_signals,
             "cmd_history": self._cmd_history,
+            "cmd_config":  self._cmd_config,
             "cmd_pause":   self._cmd_pause,
             "cmd_resume":  self._cmd_resume,
         }
-        if data in _ROUTES:
+
+        def _run() -> None:
             try:
-                _ROUTES[data]()
+                if data in _ROUTES:
+                    _ROUTES[data]()
+                elif data == "confirm_pause":
+                    self._confirm_pause()
+                elif data == "confirm_set":
+                    self._confirm_set()
+                elif data == "cancel_action":
+                    self.send("Cancelled.")
             except Exception as exc:
                 log.error(f"Callback {data} error: {exc}", exc_info=True)
                 self.send(f"Error: {exc}")
-        elif data == "confirm_pause":
-            self._confirm_pause()
-        elif data == "cancel_action":
-            self.send("Cancelled.")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── /menu ─────────────────────────────────
 
@@ -167,15 +205,16 @@ class TelegramBot:
              {"text": "Report",  "callback_data": "cmd_report"}],
             [{"text": "Signals", "callback_data": "cmd_signals"},
              {"text": "History", "callback_data": "cmd_history"}],
-            [{"text": "Pause",   "callback_data": "cmd_pause"},
-             {"text": "Resume",  "callback_data": "cmd_resume"}],
+            [{"text": "Config",  "callback_data": "cmd_config"},
+             {"text": "Pause",   "callback_data": "cmd_pause"}],
+            [{"text": "Resume",  "callback_data": "cmd_resume"}],
         ]}
         self.send("<b>Smart DCA Bot</b>\nChoose a command:", reply_markup=kb)
 
     # ── /status ───────────────────────────────
 
     def _cmd_status(self) -> None:
-        from config import MONTHLY_BUDGET, EXECUTION_TIME_UTC
+        import config as cfg
         s = _load_state()
 
         now        = datetime.now(timezone.utc)
@@ -183,9 +222,10 @@ class TelegramBot:
         days_left  = days_in_mo - now.day
         spent      = s.get("month_spent", 0.0)
         pool       = s.get("base_pool",   0.0)
+        reserve    = s.get("reserve_pool", 0.0)
         paused     = s.get("paused",      False)
 
-        h, m   = EXECUTION_TIME_UTC.split(":")
+        h, m   = cfg.EXECUTION_TIME_UTC.split(":")
         run_dt = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
         if run_dt <= now:
             run_dt += timedelta(days=1)
@@ -195,10 +235,11 @@ class TelegramBot:
         self.send(
             f"<b>Status [{icon}]</b>\n"
             f"\n"
-            f"Monthly budget  : <b>${MONTHLY_BUDGET:,.2f}</b>\n"
+            f"Monthly budget  : <b>${cfg.MONTHLY_BUDGET:,.2f}</b>\n"
             f"Spent this month: <b>${spent:,.2f}</b>\n"
-            f"Remaining       : <b>${MONTHLY_BUDGET - spent:,.2f}</b>\n"
+            f"Remaining       : <b>${cfg.MONTHLY_BUDGET - spent:,.2f}</b>\n"
             f"Pool balance    : <b>${pool:,.2f}</b>\n"
+            f"Reserve pool    : <b>${reserve:,.2f}</b>\n"
             f"Days left       : <b>{days_left}</b>\n"
             f"Next run        : <b>{next_run}</b>"
         )
@@ -227,7 +268,7 @@ class TelegramBot:
     def _cmd_signals(self) -> None:
         import signals as sig_mod
         import dca_engine
-        from config import DAILY_DRIP, POOL_CAP_X
+        import config as cfg
 
         self.send("Fetching live signals...")
         try:
@@ -237,13 +278,17 @@ class TelegramBot:
 
             comp   = dca_engine.composite_score(scores)
             mult   = dca_engine.get_multiplier(comp)
-            theory = {"base_pool": DAILY_DRIP * POOL_CAP_X, "month_spent": 0.0}
-            buy    = dca_engine.calc_buy_amount(comp, theory)
+            theory = {
+                "base_pool":    cfg.DAILY_DRIP * cfg.POOL_CAP_X,
+                "reserve_pool": cfg.MONTHLY_BUDGET * cfg.RESERVE_PCT,
+                "month_spent":  0.0,
+            }
+            buy  = dca_engine.calc_buy_amount(comp, theory)
 
-            fg  = meta.get("fear_greed",  {})
-            rsi = meta.get("rsi",         {})
-            liq = meta.get("liquidation", {})
-            ma  = "above MA200" if rsi.get("above_ma200") else "below MA200"
+            fg   = meta.get("fear_greed",  {})
+            rsi  = meta.get("rsi",         {})
+            liq  = meta.get("liquidation", {})
+            ma   = "above MA200" if rsi.get("above_ma200") else "below MA200"
 
             self.send(
                 f"<b>Signal Scores</b>\n"
@@ -268,7 +313,7 @@ class TelegramBot:
     def _cmd_history(self) -> None:
         import portfolio
         purchases = portfolio.load_purchases()
-        recent    = list(reversed(purchases[-10:]))  # newest first
+        recent    = list(reversed(purchases[-10:]))
 
         if not recent:
             self.send("No purchases recorded yet.")
@@ -287,6 +332,145 @@ class TelegramBot:
                 f" @ ${price:,.0f}  <code>{tx_short}</code>"
             )
         self.send("\n".join(lines))
+
+    # ── /config ───────────────────────────────
+
+    def _cmd_config(self) -> None:
+        import config as cfg
+
+        base_pct    = int(round((1 - cfg.RESERVE_PCT) * 100))
+        pool_ceil   = cfg.DAILY_DRIP * cfg.POOL_CAP_X
+        res_portion = cfg.MONTHLY_BUDGET * cfg.RESERVE_PCT
+        res_ceiling = res_portion * cfg.RESERVE_MAX_MONTHS
+        h, m        = cfg.EXECUTION_TIME_UTC.split(":")
+        bali_h      = (int(h) + 8) % 24
+        bali_str    = f"{bali_h:02d}:{m} Bali"
+
+        self.send(
+            f"<b>Bot Configuration</b>\n"
+            f"\n"
+            f"<b>Budget</b>\n"
+            f"  Monthly budget    : <b>${cfg.MONTHLY_BUDGET:,.2f}</b>\n"
+            f"  Base daily drip   : <b>${cfg.DAILY_DRIP:.2f}</b>"
+            f"  ({base_pct}% of budget / 30)\n"
+            f"  Pool cap          : <b>${pool_ceil:.2f}</b>"
+            f"  ({cfg.POOL_CAP_X:.0f}x base daily)\n"
+            f"\n"
+            f"<b>Reserve Mode : {'ON' if cfg.USE_RESERVE else 'OFF'}</b>\n"
+            f"  Reserve %         : {cfg.RESERVE_PCT * 100:.0f}%\n"
+            f"  Reserve threshold : {cfg.RESERVE_THRESHOLD}\n"
+            f"  Reserve max months: {cfg.RESERVE_MAX_MONTHS}\n"
+            f"  Reserve ceiling   : ${res_ceiling:,.0f}\n"
+            f"\n"
+            f"<b>No-Buy Zone : {'ON' if cfg.NO_BUY_ZONE else 'OFF'}</b>\n"
+            f"  No-buy threshold  : {cfg.NO_BUY_THRESHOLD}\n"
+            f"\n"
+            f"Schedule : <b>{cfg.EXECUTION_TIME_UTC} UTC</b>  ({bali_str})\n"
+            f"DRY RUN  : <b>{cfg.DRY_RUN}</b>"
+        )
+
+    # ── /set <key> <value> ────────────────────
+
+    def _cmd_set(self, args: list) -> None:
+        if len(args) < 2:
+            self.send(
+                "Usage: <code>/set &lt;key&gt; &lt;value&gt;</code>\n"
+                "Example: <code>/set budget 600</code>\n\n"
+                "Send /help for the full key list."
+            )
+            return
+
+        key   = args[0].lower()
+        value = " ".join(args[1:]).strip()
+
+        if key not in _CONFIG_SCHEMA:
+            valid = "\n".join(f"  {k}" for k in sorted(_CONFIG_SCHEMA))
+            self.send(f"Unknown key <b>{key}</b>.\n\nValid keys:\n{valid}")
+            return
+
+        var_name, typ, min_val, max_val = _CONFIG_SCHEMA[key]
+
+        try:
+            new_val = _parse_config_value(typ, value, min_val, max_val)
+        except ValueError as exc:
+            self.send(f"Invalid value for <b>{key}</b>: {exc}")
+            return
+
+        import config as cfg
+        old_val = getattr(cfg, var_name)
+        old_str = _format_config_val(old_val, typ)
+        new_str = _format_config_val(new_val, typ)
+
+        confirm_msg = (
+            f"Change <b>{var_name}</b>\n"
+            f"  from: <b>{old_str}</b>\n"
+            f"  to:   <b>{new_str}</b>\n\n"
+            f"This takes effect immediately."
+        )
+        if key == "dry_run" and new_val is False:
+            confirm_msg += (
+                "\n\n<b>WARNING: This enables LIVE trading."
+                " Real USDC will be spent.</b>"
+            )
+        confirm_msg += "\n\n<i>Confirm within 60 seconds.</i>"
+
+        with self._lock:
+            self._pending_set = {
+                "key":        key,
+                "var":        var_name,
+                "typ":        typ,
+                "new_val":    new_val,
+                "new_str":    new_str,
+                "expires_at": time.time() + 60,
+            }
+
+        kb = {"inline_keyboard": [[
+            {"text": "Yes, apply", "callback_data": "confirm_set"},
+            {"text": "Cancel",     "callback_data": "cancel_action"},
+        ]]}
+        self.send(confirm_msg, reply_markup=kb)
+
+    def _confirm_set(self) -> None:
+        with self._lock:
+            pending          = self._pending_set
+            self._pending_set = None
+
+        if pending is None or time.time() > pending["expires_at"]:
+            self.send("Confirm expired (>60s). Send /set again.")
+            return
+
+        var_name = pending["var"]
+        new_val  = pending["new_val"]
+        key      = pending["key"]
+        new_str  = pending["new_str"]
+
+        try:
+            _update_config_file(var_name, new_val)
+            _reload_all_config()
+
+            # Reschedule the daily job if execution_time changed
+            if key == "execution_time" and _reschedule_fn is not None:
+                _reschedule_fn(new_val)
+
+            # Build success message with derived values for budget/pct changes
+            import config as cfg
+            msg = f"{var_name} updated to <b>{new_str}</b>."
+            if key in ("budget", "reserve_pct"):
+                msg += (
+                    f"\nBase daily drip is now <b>${cfg.DAILY_DRIP:.2f}</b>."
+                    f"\nPool cap is now <b>${cfg.DAILY_DRIP * cfg.POOL_CAP_X:.2f}</b>."
+                )
+            elif key == "execution_time":
+                h, m     = new_val.split(":")
+                bali_h   = (int(h) + 8) % 24
+                msg     += f"  ({bali_h:02d}:{m} Bali)  Job rescheduled."
+
+            self.send(msg)
+            log.info(f"Config updated via Telegram: {var_name} = {new_str}")
+
+        except Exception as exc:
+            self.send(f"Failed to update {var_name}: {exc}")
+            log.error(f"Config update failed: {exc}", exc_info=True)
 
     # ── /pause ────────────────────────────────
 
@@ -311,8 +495,8 @@ class TelegramBot:
 
     def _confirm_pause(self) -> None:
         with self._lock:
-            pending               = self._pending_pause
-            self._pending_pause   = None
+            pending             = self._pending_pause
+            self._pending_pause = None
 
         if pending is None or time.time() > pending["expires_at"]:
             self.send("Confirm expired (>60s). Send /pause again.")
@@ -337,21 +521,27 @@ class TelegramBot:
     # ── /help ─────────────────────────────────
 
     def _cmd_help(self) -> None:
+        keys = "  ".join(sorted(_CONFIG_SCHEMA.keys()))
         self.send(
             "<b>Smart DCA Bot — Commands</b>\n"
             "\n"
-            "/menu    — inline keyboard\n"
-            "/status  — budget, pool, next run\n"
-            "/report  — portfolio P&amp;L\n"
-            "/signals — live signal scores\n"
-            "/history — last 10 purchases\n"
-            "/pause   — pause buying (requires confirm)\n"
-            "/resume  — resume buying\n"
-            "/help    — this message"
+            "/menu              — inline keyboard\n"
+            "/status            — budget, pool, next run\n"
+            "/report            — portfolio P&amp;L\n"
+            "/signals           — live signal scores\n"
+            "/history           — last 10 buys\n"
+            "/config            — view all settings\n"
+            "/set &lt;key&gt; &lt;value&gt;  — change a setting\n"
+            "/pause             — pause buying\n"
+            "/resume            — resume buying\n"
+            "/help              — this list\n"
+            "\n"
+            "<b>Settings keys:</b>\n"
+            f"<code>{keys}</code>"
         )
 
 
-# ── Module helpers (lazy imports to avoid circular deps) ──────────
+# ── Module helpers ────────────────────────────
 
 def _load_state() -> dict:
     import state
@@ -361,10 +551,88 @@ def _save_state(s: dict) -> None:
     import state
     state.save_state(s)
 
+def _parse_config_value(typ: str, raw: str, min_val, max_val):
+    """Parse and validate a user-supplied config value string."""
+    if typ == "float":
+        try:
+            v = float(raw)
+        except ValueError:
+            raise ValueError(f"Expected a number, got '{raw}'")
+        if not (min_val <= v <= max_val):
+            raise ValueError(f"Must be between {min_val} and {max_val}")
+        return v
+    elif typ == "int":
+        try:
+            v = int(raw)
+        except ValueError:
+            raise ValueError(f"Expected an integer, got '{raw}'")
+        if not (min_val <= v <= max_val):
+            raise ValueError(f"Must be between {min_val} and {max_val}")
+        return v
+    elif typ == "bool":
+        if raw.lower() in ("true", "on", "1", "yes"):
+            return True
+        if raw.lower() in ("false", "off", "0", "no"):
+            return False
+        raise ValueError("Must be true/false/on/off/1/0")
+    elif typ == "hhmm":
+        if not re.match(r"^\d{2}:\d{2}$", raw):
+            raise ValueError("Must be HH:MM format (e.g. 09:00)")
+        h, m = raw.split(":")
+        if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+            raise ValueError("Invalid time — hours 00-23, minutes 00-59")
+        return raw
+    raise ValueError(f"Unknown type '{typ}'")
+
+def _format_config_val(val, typ: str) -> str:
+    """Format a config value for display in confirmation messages."""
+    if typ == "bool":
+        return "True" if val else "False"
+    if typ == "float":
+        # Show up to 4 significant digits, no trailing zeros
+        return f"{val:.10g}"
+    return str(val)
+
+def _update_config_file(var_name: str, new_val) -> None:
+    """Regex-replace the assignment line for var_name in config.py."""
+    config_path = Path(__file__).parent / "config.py"
+    content     = config_path.read_text(encoding="utf-8")
+
+    if isinstance(new_val, bool):
+        val_str = "True" if new_val else "False"
+    elif isinstance(new_val, str):
+        val_str = f'"{new_val}"'
+    elif isinstance(new_val, float):
+        val_str = f"{new_val:.10g}"
+    elif isinstance(new_val, int):
+        val_str = str(new_val)
+    else:
+        val_str = repr(new_val)
+
+    pattern     = rf"^{re.escape(var_name)}\s*=.*$"
+    new_content = re.sub(pattern, f"{var_name} = {val_str}", content, flags=re.MULTILINE)
+
+    if new_content == content:
+        raise ValueError(f"Pattern for {var_name} not found in config.py")
+
+    config_path.write_text(new_content, encoding="utf-8")
+
+def _reload_all_config() -> None:
+    """Reload config and all modules that import from it at module level."""
+    import config, dca_engine, state, signals, base_client
+    importlib.reload(config)
+    # Dependent modules — re-executes their top-level 'from config import ...'
+    importlib.reload(state)
+    importlib.reload(dca_engine)
+    importlib.reload(signals)
+    importlib.reload(base_client)
+    log.info("Config reloaded in-process.")
+
 
 # ── Module-level singleton + public API ───────────────────────────
 
-_bot: TelegramBot | None = None
+_bot:          TelegramBot | None           = None
+_reschedule_fn: "callable[[str], None] | None" = None
 
 
 def start_background_bot() -> TelegramBot:
@@ -376,6 +644,16 @@ def start_background_bot() -> TelegramBot:
     _bot = TelegramBot()
     _bot.start()
     return _bot
+
+
+def register_reschedule_fn(fn) -> None:
+    """Register a callback that run_bot exposes to reschedule the daily job.
+
+    Signature: fn(new_time_utc: str) -> None
+    Called by _confirm_set when execution_time is changed.
+    """
+    global _reschedule_fn
+    _reschedule_fn = fn
 
 
 def send_buy_alert(
