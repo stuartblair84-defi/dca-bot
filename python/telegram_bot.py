@@ -119,6 +119,17 @@ class TelegramBot:
                 log.warning(f"Telegram poll error (retry in 5s): {exc}")
                 time.sleep(5)
 
+    def _ack_callback(self, callback_id: str) -> None:
+        """Fire-and-forget answerCallbackQuery. Never raises."""
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{self.token}/answerCallbackQuery",
+                json={"callback_query_id": callback_id},
+                timeout=3,
+            )
+        except Exception:
+            pass
+
     def _dispatch(self, update: dict) -> None:
         """Route an update to the correct handler, enforcing chat_id guard."""
         msg = update.get("message")
@@ -130,12 +141,9 @@ class TelegramBot:
             self._handle_message(msg)
 
         if cb:
-            # Answer immediately — clears the loading spinner regardless of outcome.
-            # Must be wrapped so a network hiccup here cannot kill the poll loop.
-            try:
-                self._api("answerCallbackQuery", callback_query_id=cb["id"])
-            except Exception as exc:
-                log.warning(f"answerCallbackQuery failed: {exc}")
+            # Fire-and-forget ack — clears the spinner, never blocks dispatch.
+            cb_id = cb["id"]
+            threading.Thread(target=self._ack_callback, args=(cb_id,), daemon=True).start()
             if str(cb.get("message", {}).get("chat", {}).get("id")) != self.chat_id:
                 return
             self._handle_callback(cb)
