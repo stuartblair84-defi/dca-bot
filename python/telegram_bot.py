@@ -101,11 +101,25 @@ class TelegramBot:
 
     # ── Polling loop ──────────────────────────
 
+    def _get_updates(self) -> list:
+        """Short-poll getUpdates — returns immediately with pending updates or []."""
+        url  = f"https://api.telegram.org/bot{self.token}/getUpdates"
+        resp = requests.get(
+            url,
+            params={
+                "offset":          self._offset,
+                "timeout":         0,
+                "allowed_updates": ["message", "callback_query"],
+            },
+            timeout=(5, 5),   # (connect timeout, read timeout)
+        )
+        resp.raise_for_status()
+        return resp.json().get("result", [])
+
     def _poll_loop(self) -> None:
         while self._running:
             try:
-                data = self._api("getUpdates", offset=self._offset, timeout=20)
-                for update in data.get("result", []):
+                for update in self._get_updates():
                     log.info(f"Update received: {list(update.keys())}")
                     self._offset = update["update_id"] + 1
                     try:
@@ -116,8 +130,9 @@ class TelegramBot:
                             exc_info=True,
                         )
             except Exception as exc:
-                log.warning(f"Telegram poll error (retry in 5s): {exc}")
-                time.sleep(5)
+                log.warning(f"Telegram poll error: {exc}")
+                time.sleep(1)
+            time.sleep(0.5)   # 500ms between polls — fast enough to feel instant
 
     def _ack_callback(self, callback_id: str) -> None:
         """Fire-and-forget answerCallbackQuery. Never raises."""
