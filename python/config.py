@@ -53,7 +53,7 @@ POOL_FEE       = 500    # 0.05% — primary cbBTC/USDC pool on Base
 CHAIN_ID = 8453         # Base mainnet
 
 # ── Execution ────────────────────────────────
-EXECUTION_TIME_UTC = "09:00"
+EXECUTION_TIME_UTC = "00:20"
 
 # ── Kraken symbol for BTC (proxy for cbBTC) ──
 KRAKEN_BTC_SYMBOL  = "XBTUSD"
