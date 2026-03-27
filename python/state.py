@@ -8,15 +8,22 @@ import json
 import os
 from datetime import datetime, timezone
 
-from config import DAILY_DRIP, RESERVE_ENABLED
+from config import (
+    DAILY_DRIP,
+    MONTHLY_BUDGET,
+    POOL_CAP_X,
+    USE_RESERVE,
+    RESERVE_PCT,
+    RESERVE_MAX_MONTHS,
+)
 
 # state.json lives at the project root (one level above python/)
 _STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "state.json")
 
 _DEFAULT_STATE: dict = {
     "month_spent":  0.0,   # USD spent this calendar month
-    "base_pool":    0.0,   # accumulated unspent drip budget
-    "reserve_pool": 0.0,   # cumulative reserve (never resets)
+    "base_pool":    0.0,   # accumulated unspent drip budget (non-reserve)
+    "reserve_pool": 0.0,   # cumulative reserve — grows monthly, never resets
     "last_run":     None,  # ISO-8601 UTC string of last execution
     "last_month":   None,  # "YYYY-MM" of last known month
     "paused":       False, # set True via /pause Telegram command
@@ -43,25 +50,27 @@ def save_state(state: dict) -> None:
 
 
 def drip_pool(state: dict) -> dict:
-    """Add one day's drip to base_pool, capped at POOL_CAP_MULTIPLIER × DAILY_DRIP.
+    """Add one day's base drip to base_pool, capped at POOL_CAP_X × DAILY_DRIP.
 
     Call once per scheduled execution before calc_buy_amount().
+    The cap prevents runaway accumulation during skipped or paused days.
     """
-    from config import POOL_CAP_MULTIPLIER
-    pool_ceiling = DAILY_DRIP * POOL_CAP_MULTIPLIER
+    pool_ceiling       = DAILY_DRIP * POOL_CAP_X
     state["base_pool"] = min(state["base_pool"] + DAILY_DRIP, pool_ceiling)
     return state
 
 
 def handle_month_rollover(state: dict) -> dict:
-    """Check for a new calendar month and reset per-month counters.
+    """Check for a new calendar month and reset/top-up per-month counters.
 
     On rollover:
-      - month_spent  → 0.0
-      - base_pool    → 0.0  (fresh month; drips will refill it)
-      - reserve_pool → topped up by the unspent base_pool remainder
-                       (cumulative; never resets), only when RESERVE_ENABLED.
-      - last_month   → current month string
+      - base_pool    -> 0.0          (fresh month; daily drips will refill it)
+      - month_spent  -> 0.0
+      - reserve_pool -> min(reserve_pool + reserve_portion, reserve_ceiling)
+                        where reserve_portion = MONTHLY_BUDGET * RESERVE_PCT
+                        and   reserve_ceiling  = reserve_portion * RESERVE_MAX_MONTHS
+                        Reserve accumulates cumulatively and is NEVER reset to zero.
+      - last_month   -> current month string
 
     Returns the (potentially mutated) state dict.
     """
@@ -69,9 +78,13 @@ def handle_month_rollover(state: dict) -> dict:
     last_month    = state.get("last_month")
 
     if last_month is not None and last_month != current_month:
-        # Optional: carry unspent pool into reserve
-        if RESERVE_ENABLED:
-            state["reserve_pool"] += state.get("base_pool", 0.0)
+        if USE_RESERVE:
+            reserve_portion = MONTHLY_BUDGET * RESERVE_PCT
+            reserve_ceiling = reserve_portion * RESERVE_MAX_MONTHS
+            state["reserve_pool"] = min(
+                state.get("reserve_pool", 0.0) + reserve_portion,
+                reserve_ceiling,
+            )
 
         state["base_pool"]   = 0.0
         state["month_spent"] = 0.0
@@ -83,10 +96,14 @@ def handle_month_rollover(state: dict) -> dict:
 def record_execution(state: dict, amount_spent: float) -> dict:
     """Update state after an execution (real or dry-run).
 
-    Deducts amount_spent from base_pool, adds to month_spent,
-    and stamps last_run.
+    Deduction order: base_pool first, then reserve_pool for any remainder.
+    This matches calc_buy_amount() which draws base first, then reserve.
     """
-    state["base_pool"]   = max(0.0, state["base_pool"] - amount_spent)
-    state["month_spent"] = state["month_spent"] + amount_spent
-    state["last_run"]    = datetime.now(timezone.utc).isoformat()
+    base_draw    = min(amount_spent, state.get("base_pool", 0.0))
+    reserve_draw = max(0.0, amount_spent - base_draw)
+
+    state["base_pool"]    = max(0.0, state["base_pool"] - base_draw)
+    state["reserve_pool"] = max(0.0, state.get("reserve_pool", 0.0) - reserve_draw)
+    state["month_spent"]  = state["month_spent"] + amount_spent
+    state["last_run"]     = datetime.now(timezone.utc).isoformat()
     return state

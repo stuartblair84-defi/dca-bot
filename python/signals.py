@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from config import (
     SIGNAL_WEIGHTS, KRAKEN_BTC_SYMBOL, KRAKEN_DAILY,
-    DAILY_DRIP, POOL_CAP_MULTIPLIER,
+    DAILY_DRIP, POOL_CAP_X,
 )
 
 
@@ -228,7 +228,7 @@ if __name__ == "__main__":
 
     # Theoretical state: pool fully loaded to cap
     theoretical_state = {
-        "base_pool":   DAILY_DRIP * POOL_CAP_MULTIPLIER,
+        "base_pool":   DAILY_DRIP * POOL_CAP_X,
         "month_spent": 0.0,
     }
     buy_amt = calc_buy_amount(comp, theoretical_state)

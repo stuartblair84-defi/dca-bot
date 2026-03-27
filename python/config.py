@@ -7,13 +7,21 @@
 DRY_RUN = True              # True = simulate only, never execute
 
 # ── Budget ───────────────────────────────────
-MONTHLY_BUDGET = 500.0       # USD per month, for cbBTC
-DAILY_DRIP = MONTHLY_BUDGET / 30  # ~$16.67 dripped per execution day
+MONTHLY_BUDGET = 500.0                                    # USD per month for cbBTC
+RESERVE_PCT    = 0.40                                     # 40% of budget held in reserve pool
+DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$10.00/day (non-reserve)
 
-# ── Pool ─────────────────────────────────────
-POOL_CAP_MULTIPLIER = 5      # base_pool ceiling = 5 × DAILY_DRIP (~$83.33)
-RESERVE_ENABLED     = False  # reserve_pool accumulation off
-NO_BUY_ZONE_ENABLED = False  # no-buy zone off
+# ── Pool pacing ───────────────────────────────
+POOL_CAP_X = 5.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$50.00)
+
+# ── Reserve mode ─────────────────────────────
+USE_RESERVE        = True   # hold back RESERVE_PCT of budget for high-signal days
+RESERVE_THRESHOLD  = 0.65   # composite score required to release reserve funds
+RESERVE_MAX_MONTHS = 6      # reserve ceiling = (MONTHLY_BUDGET × RESERVE_PCT) × 6
+
+# ── No-buy zone ───────────────────────────────
+NO_BUY_ZONE       = True    # skip buy entirely when score is too low
+NO_BUY_THRESHOLD  = 0.35    # skip if composite score is below this
 
 # ── Signal Weights (must sum to 1.0) ─────────
 SIGNAL_WEIGHTS = {

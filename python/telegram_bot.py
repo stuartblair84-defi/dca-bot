@@ -227,7 +227,7 @@ class TelegramBot:
     def _cmd_signals(self) -> None:
         import signals as sig_mod
         import dca_engine
-        from config import DAILY_DRIP, POOL_CAP_MULTIPLIER
+        from config import DAILY_DRIP, POOL_CAP_X
 
         self.send("Fetching live signals...")
         try:
@@ -237,7 +237,7 @@ class TelegramBot:
 
             comp   = dca_engine.composite_score(scores)
             mult   = dca_engine.get_multiplier(comp)
-            theory = {"base_pool": DAILY_DRIP * POOL_CAP_MULTIPLIER, "month_spent": 0.0}
+            theory = {"base_pool": DAILY_DRIP * POOL_CAP_X, "month_spent": 0.0}
             buy    = dca_engine.calc_buy_amount(comp, theory)
 
             fg  = meta.get("fear_greed",  {})
