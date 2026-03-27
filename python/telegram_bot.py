@@ -106,10 +106,17 @@ class TelegramBot:
             try:
                 data = self._api("getUpdates", offset=self._offset, timeout=20)
                 for update in data.get("result", []):
+                    log.info(f"Update received: {list(update.keys())}")
                     self._offset = update["update_id"] + 1
-                    self._dispatch(update)
+                    try:
+                        self._dispatch(update)
+                    except Exception as exc:
+                        log.error(
+                            f"Dispatch error (update_id={update.get('update_id')}): {exc}",
+                            exc_info=True,
+                        )
             except Exception as exc:
-                log.debug(f"Telegram poll error (retry in 5s): {exc}")
+                log.warning(f"Telegram poll error (retry in 5s): {exc}")
                 time.sleep(5)
 
     def _dispatch(self, update: dict) -> None:
@@ -122,9 +129,14 @@ class TelegramBot:
                 return
             self._handle_message(msg)
 
-        elif cb:
-            if str(cb.get("message", {}).get("chat", {}).get("id")) != self.chat_id:
+        if cb:
+            # Answer immediately — clears the loading spinner regardless of outcome.
+            # Must be wrapped so a network hiccup here cannot kill the poll loop.
+            try:
                 self._api("answerCallbackQuery", callback_query_id=cb["id"])
+            except Exception as exc:
+                log.warning(f"answerCallbackQuery failed: {exc}")
+            if str(cb.get("message", {}).get("chat", {}).get("id")) != self.chat_id:
                 return
             self._handle_callback(cb)
 
@@ -167,10 +179,7 @@ class TelegramBot:
     # ── Callback routing (non-blocking) ───────
 
     def _handle_callback(self, cb: dict) -> None:
-        query_id = cb["id"]
-        data     = cb.get("data", "")
-        self._api("answerCallbackQuery", callback_query_id=query_id)
-
+        data = cb.get("data", "")
         log.info(f"Callback received: {data}")
 
         _ROUTES = {
