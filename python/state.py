@@ -19,6 +19,7 @@ _DEFAULT_STATE: dict = {
     "reserve_pool": 0.0,   # cumulative reserve (never resets)
     "last_run":     None,  # ISO-8601 UTC string of last execution
     "last_month":   None,  # "YYYY-MM" of last known month
+    "paused":       False, # set True via /pause Telegram command
 }
 
 

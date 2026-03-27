@@ -37,6 +37,7 @@ import signals as signals_mod
 import dca_engine
 import base_client
 import portfolio
+import telegram_bot
 
 
 # ── Core execution unit ───────────────────────
@@ -81,12 +82,13 @@ def run_once() -> None:
         multiplier = dca_engine.get_multiplier(comp)
         buy_amount = dca_engine.calc_buy_amount(comp, bot_state)
         buying     = dca_engine.should_buy(comp, bot_state)
+        paused     = bot_state.get("paused", False)
 
         log.info(f"Composite: {comp:.4f}  Multiplier: {multiplier:.1f}x  "
-                 f"Buy amount: ${buy_amount:.2f}  Buying: {buying}")
+                 f"Buy amount: ${buy_amount:.2f}  Buying: {buying}  Paused: {paused}")
 
         # 4. Execute (or dry-run)
-        if buying:
+        if buying and not paused:
             log.info(f"{'[DRY RUN] ' if DRY_RUN else ''}Buying ${buy_amount:.2f} of cbBTC ...")
 
             result = base_client.buy_cbbtc(buy_amount)
@@ -107,6 +109,20 @@ def run_once() -> None:
 
             # Update state
             bot_state = state_mod.record_execution(bot_state, buy_amount)
+
+            # Telegram buy alert
+            summary = portfolio.get_summary()
+            telegram_bot.send_buy_alert(
+                qty        = quoted_cbbtc,
+                price_usd  = btc_price,
+                usdc_spent = buy_amount,
+                comp_score = comp,
+                multiplier = multiplier,
+                tx_hash    = result.get("swap_tx", ""),
+                summary    = summary,
+            )
+        elif paused:
+            log.info("Buy skipped — bot is paused (/resume to re-enable).")
         else:
             log.info("No buy this cycle (pool empty or budget exhausted).")
 
@@ -135,8 +151,9 @@ def run_once() -> None:
 
 def run_daemon() -> None:
     """Schedule run_once() daily at EXECUTION_TIME_UTC and loop forever."""
-    log.info(f"Daemon mode — scheduled daily at {EXECUTION_TIME_UTC} UTC  DRY_RUN={DRY_RUN}")
+    log.info(f"Daemon mode -- scheduled daily at {EXECUTION_TIME_UTC} UTC  DRY_RUN={DRY_RUN}")
 
+    telegram_bot.start_background_bot()
     schedule.every().day.at(EXECUTION_TIME_UTC).do(run_once)
 
     log.info("Waiting for next scheduled run ...")
