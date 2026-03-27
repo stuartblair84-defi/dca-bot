@@ -171,29 +171,44 @@ class TelegramBot:
         data     = cb.get("data", "")
         self._api("answerCallbackQuery", callback_query_id=query_id)
 
+        log.info(f"Callback received: {data}")
+
         _ROUTES = {
-            "cmd_status":  self._cmd_status,
-            "cmd_report":  self._cmd_report,
-            "cmd_signals": self._cmd_signals,
-            "cmd_history": self._cmd_history,
-            "cmd_config":  self._cmd_config,
-            "cmd_pause":   self._cmd_pause,
-            "cmd_resume":  self._cmd_resume,
+            "status":  self._cmd_status,
+            "report":  self._cmd_report,
+            "signals": self._cmd_signals,
+            "history": self._cmd_history,
+            "config":  self._cmd_config,
+            "pause":   self._cmd_pause,
+            "resume":  self._cmd_resume,
         }
 
         def _run() -> None:
-            try:
-                if data in _ROUTES:
+            if data in _ROUTES:
+                try:
                     _ROUTES[data]()
-                elif data == "confirm_pause":
+                except Exception as exc:
+                    log.error(f"Callback {data} error: {exc}", exc_info=True)
+                    self.send(f"Error in {data}: {exc}")
+            elif data == "confirm_pause":
+                try:
                     self._confirm_pause()
-                elif data == "confirm_set":
+                except Exception as exc:
+                    log.error(f"Callback confirm_pause error: {exc}", exc_info=True)
+                    self.send(f"Error confirming pause: {exc}")
+            elif data == "confirm_set":
+                try:
                     self._confirm_set()
-                elif data == "cancel_action":
+                except Exception as exc:
+                    log.error(f"Callback confirm_set error: {exc}", exc_info=True)
+                    self.send(f"Error applying setting: {exc}")
+            elif data == "cancel_action":
+                try:
                     self.send("Cancelled.")
-            except Exception as exc:
-                log.error(f"Callback {data} error: {exc}", exc_info=True)
-                self.send(f"Error: {exc}")
+                except Exception as exc:
+                    log.error(f"Callback cancel_action error: {exc}", exc_info=True)
+            else:
+                log.warning(f"Unrecognised callback_data: {data!r}")
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -201,13 +216,13 @@ class TelegramBot:
 
     def _cmd_menu(self) -> None:
         kb = {"inline_keyboard": [
-            [{"text": "Status",  "callback_data": "cmd_status"},
-             {"text": "Report",  "callback_data": "cmd_report"}],
-            [{"text": "Signals", "callback_data": "cmd_signals"},
-             {"text": "History", "callback_data": "cmd_history"}],
-            [{"text": "Config",  "callback_data": "cmd_config"},
-             {"text": "Pause",   "callback_data": "cmd_pause"}],
-            [{"text": "Resume",  "callback_data": "cmd_resume"}],
+            [{"text": "Status",  "callback_data": "status"},
+             {"text": "Report",  "callback_data": "report"}],
+            [{"text": "Signals", "callback_data": "signals"},
+             {"text": "History", "callback_data": "history"}],
+            [{"text": "Config",  "callback_data": "config"},
+             {"text": "Pause",   "callback_data": "pause"}],
+            [{"text": "Resume",  "callback_data": "resume"}],
         ]}
         self.send("<b>Smart DCA Bot</b>\nChoose a command:", reply_markup=kb)
 
