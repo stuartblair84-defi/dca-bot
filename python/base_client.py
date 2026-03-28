@@ -17,6 +17,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from web3 import Web3
+from web3.exceptions import Web3RPCError
 from eth_account import Account
 
 # .env lives in the same folder as this script (python/.env)
@@ -182,8 +183,16 @@ def _spot_price_from_slot0() -> float:
     price_human = price_raw * (10 ** USDC_DECIMALS) / (10 ** CBBTC_DECIMALS)
     return price_human
 
-def _build_eip1559_tx(contract_fn, value_wei: int = 0) -> dict:
-    """Build an EIP-1559 tx dict with 20% gas buffer."""
+def _build_eip1559_tx(contract_fn, value_wei: int = 0, nonce: int | None = None) -> dict:
+    """Build an EIP-1559 tx dict with 20% gas buffer.
+
+    Pass nonce explicitly to avoid re-fetching from the node when chaining
+    multiple transactions in one buy cycle (node may not have indexed prior
+    txs yet, causing 'nonce too low' on the next tx).
+    """
+    if nonce is None:
+        nonce = w3.eth.get_transaction_count(account.address, "pending")
+
     latest       = w3.eth.get_block("latest")
     base_fee     = latest["baseFeePerGas"]
     max_priority = w3.eth.max_priority_fee
@@ -191,7 +200,7 @@ def _build_eip1559_tx(contract_fn, value_wei: int = 0) -> dict:
 
     tx = contract_fn.build_transaction({
         "from":                 account.address,
-        "nonce":                w3.eth.get_transaction_count(account.address),
+        "nonce":                nonce,
         "type":                 2,
         "chainId":              CHAIN_ID,
         "value":                value_wei,
@@ -208,8 +217,17 @@ def _build_eip1559_tx(contract_fn, value_wei: int = 0) -> dict:
     return tx
 
 def _sign_and_send(tx: dict) -> str:
-    signed  = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    """Sign and broadcast a transaction. Retries once on nonce-too-low."""
+    signed = account.sign_transaction(tx)
+    try:
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    except Web3RPCError as e:
+        if "nonce too low" in str(e).lower():
+            tx["nonce"] = w3.eth.get_transaction_count(account.address, "pending")
+            signed  = account.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        else:
+            raise
     return tx_hash.hex()
 
 
@@ -227,7 +245,7 @@ def get_cbbtc_balance() -> float:
     return _cbbtc_from_raw(raw)
 
 
-def check_and_approve_usdc(amount_raw: int) -> str | None:
+def check_and_approve_usdc(amount_raw: int, nonce: int | None = None) -> str | None:
     """Check current allowance; approve exact amount only if insufficient.
 
     Returns tx hash if an approval was broadcast, else None.
@@ -246,7 +264,7 @@ def check_and_approve_usdc(amount_raw: int) -> str | None:
         print(f"  [approve] DRY RUN -- would approve {shortfall:.6f} USDC to SwapRouter02")
         return None
 
-    tx = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, amount_raw))
+    tx = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, amount_raw), nonce=nonce)
     tx_hash = _sign_and_send(tx)
     print(f"  [approve] tx: {tx_hash}")
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -285,7 +303,7 @@ def get_quote(usdc_amount_usd: float) -> tuple[float, str]:
     return cbbtc_out, "slot0-spot"
 
 
-def swap_usdc_to_cbbtc(usdc_amount_usd: float, slippage_bps: int = 50) -> str:
+def swap_usdc_to_cbbtc(usdc_amount_usd: float, slippage_bps: int = 50, nonce: int | None = None) -> str:
     """Build and broadcast exactInputSingle on SwapRouter02.
 
     Wraps the call in multicall(deadline, [data]) so the tx reverts
@@ -315,14 +333,14 @@ def swap_usdc_to_cbbtc(usdc_amount_usd: float, slippage_bps: int = 50) -> str:
         "sqrtPriceLimitX96": 0,
     }
     inner_calldata = router.encode_abi("exactInputSingle", args=[swap_params])
-    tx = _build_eip1559_tx(router.functions.multicall(deadline, [inner_calldata]))
+    tx = _build_eip1559_tx(router.functions.multicall(deadline, [inner_calldata]), nonce=nonce)
     tx_hash = _sign_and_send(tx)
     print(f"  [swap] tx: {tx_hash}")
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
     return tx_hash
 
 
-def transfer_cbbtc_to_cold(amount_raw: int) -> str:
+def transfer_cbbtc_to_cold(amount_raw: int, nonce: int | None = None) -> str:
     """ERC-20 transfer of cbBTC from hot wallet to COLD_WALLET.
 
     Returns tx hash.
@@ -334,7 +352,7 @@ def transfer_cbbtc_to_cold(amount_raw: int) -> str:
         print(f"  [transfer] DRY RUN -- would call cbBTC.transfer(cold_wallet, {amount_raw})")
         return "0x" + "0" * 64
 
-    tx = _build_eip1559_tx(cbbtc_contract.functions.transfer(_COLD, amount_raw))
+    tx = _build_eip1559_tx(cbbtc_contract.functions.transfer(_COLD, amount_raw), nonce=nonce)
     tx_hash = _sign_and_send(tx)
     print(f"  [transfer] tx: {tx_hash}")
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
@@ -364,12 +382,19 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     quoted, source = get_quote(usdc_amount_usd)
     print(f"  [quote]  ${usdc_amount_usd:.2f} USDC = ~{quoted:.8f} cbBTC  (src={source})")
 
-    # 3. Approve
-    usdc_raw     = _usdc_to_raw(usdc_amount_usd)
-    approve_hash = check_and_approve_usdc(usdc_raw)
+    # 3. Approve + Swap + Transfer — fetch nonce once with 'pending' so each
+    #    successive tx in this cycle gets the correct sequential nonce even
+    #    before the node has indexed the prior tx.
+    usdc_raw = _usdc_to_raw(usdc_amount_usd)
+    nonce    = w3.eth.get_transaction_count(account.address, "pending") if not DRY_RUN else 0
+
+    approve_hash = check_and_approve_usdc(usdc_raw, nonce=nonce)
+    if approve_hash:          # approval was broadcast — advance nonce
+        nonce += 1
 
     # 4. Swap
-    swap_hash = swap_usdc_to_cbbtc(usdc_amount_usd)
+    swap_hash = swap_usdc_to_cbbtc(usdc_amount_usd, nonce=nonce)
+    nonce += 1
 
     # 5. Transfer received cbBTC to cold wallet
     #    Live: use actual post-swap balance.  Dry-run: use quoted amount.
@@ -378,7 +403,7 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     else:
         cbbtc_raw = cbbtc_contract.functions.balanceOf(account.address).call()
 
-    transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw)
+    transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw, nonce=nonce)
 
     print(f"\n  {'DRY RUN complete -- no transactions broadcast' if DRY_RUN else 'Done.'}")
     print(f"{'=' * 54}\n")
