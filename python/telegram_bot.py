@@ -746,3 +746,32 @@ def send_buy_alert(
         )
     except Exception as exc:
         log.warning(f"Buy alert failed: {exc}")
+
+
+def send_transfer_failed_alert(qty: float, error: str) -> None:
+    """Send an urgent alert when the swap succeeded but cold-wallet transfer failed.
+
+    Standalone — works whether or not the polling bot is running.
+    """
+    token   = os.getenv("TELEGRAM_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+
+    text = (
+        f"<b>WARNING: Transfer to cold wallet failed</b>\n"
+        f"\n"
+        f"Swap succeeded — <b>{qty:.8f} cbBTC</b> is sitting in the hot wallet.\n"
+        f"Manual transfer to cold wallet is required.\n"
+        f"\n"
+        f"Error: <code>{error}</code>"
+    )
+
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as exc:
+        log.warning(f"Transfer-failed alert send error: {exc}")

@@ -91,29 +91,33 @@ def run_once() -> None:
         if buying and not paused:
             log.info(f"{'[DRY RUN] ' if DRY_RUN else ''}Buying ${buy_amount:.2f} of cbBTC ...")
 
-            result = base_client.buy_cbbtc(buy_amount)
+            result    = base_client.buy_cbbtc(buy_amount)
+            qty       = result["qty"]
+            btc_price = result["price"]
 
-            # Derive qty and price from the quote used in buy_cbbtc
-            quoted_cbbtc, _ = base_client.get_quote(buy_amount)
-            btc_price       = buy_amount / quoted_cbbtc if quoted_cbbtc > 0 else 0.0
-
+            # Record purchase and update state immediately after the swap,
+            # regardless of whether the cold-wallet transfer succeeded.
             portfolio.record_purchase(
                 asset      = "cbBTC",
-                qty        = quoted_cbbtc,
+                qty        = qty,
                 price_usd  = btc_price,
                 usdc_spent = buy_amount,
                 tx_hash    = result.get("swap_tx", ""),
                 signals    = scores_full,
             )
-            log.info(f"Recorded: {quoted_cbbtc:.8f} cbBTC @ ${btc_price:,.2f}")
+            log.info(f"Recorded: {qty:.8f} cbBTC @ ${btc_price:,.2f}")
 
-            # Update state
             bot_state = state_mod.record_execution(bot_state, buy_amount)
+
+            # Alert if transfer to cold wallet failed
+            if result.get("transfer_error"):
+                log.error(f"Transfer to cold wallet FAILED: {result['transfer_error']}")
+                telegram_bot.send_transfer_failed_alert(qty, result["transfer_error"])
 
             # Telegram buy alert
             summary = portfolio.get_summary()
             telegram_bot.send_buy_alert(
-                qty        = quoted_cbbtc,
+                qty        = qty,
                 price_usd  = btc_price,
                 usdc_spent = buy_amount,
                 comp_score = comp,

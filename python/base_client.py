@@ -396,22 +396,38 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     swap_hash = swap_usdc_to_cbbtc(usdc_amount_usd, nonce=nonce)
     nonce += 1
 
-    # 5. Transfer received cbBTC to cold wallet
-    #    Live: use actual post-swap balance.  Dry-run: use quoted amount.
+    # 5. Determine quantity received
+    #    Live: read actual post-swap balance so qty is exact.
+    #    Dry-run: use quoted amount.
     if DRY_RUN:
         cbbtc_raw = int(quoted * 10 ** CBBTC_DECIMALS)
     else:
         cbbtc_raw = cbbtc_contract.functions.balanceOf(account.address).call()
 
-    transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw, nonce=nonce)
+    qty   = _cbbtc_from_raw(cbbtc_raw)
+    price = usdc_amount_usd / qty if qty > 0 else 0.0
+
+    # 6. Transfer to cold wallet — caught here so a nonce or RPC failure
+    #    after a successful swap does not prevent the caller from recording
+    #    the purchase and updating state.
+    transfer_hash  = None
+    transfer_error = None
+    try:
+        transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw, nonce=nonce)
+    except Exception as exc:
+        transfer_error = str(exc)
+        print(f"  [transfer] FAILED: {exc}")
 
     print(f"\n  {'DRY RUN complete -- no transactions broadcast' if DRY_RUN else 'Done.'}")
     print(f"{'=' * 54}\n")
 
     return {
-        "approve_tx":  approve_hash,
-        "swap_tx":     swap_hash,
-        "transfer_tx": transfer_hash,
+        "approve_tx":     approve_hash,
+        "swap_tx":        swap_hash,
+        "transfer_tx":    transfer_hash,
+        "transfer_error": transfer_error,
+        "qty":            qty,
+        "price":          price,
     }
 
 
