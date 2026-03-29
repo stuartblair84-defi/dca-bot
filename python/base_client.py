@@ -267,7 +267,10 @@ def check_and_approve_usdc(amount_raw: int, nonce: int | None = None) -> str | N
     tx = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, amount_raw), nonce=nonce)
     tx_hash = _sign_and_send(tx)
     print(f"  [approve] tx: {tx_hash}")
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
+    if receipt.status != 1:
+        raise Exception(f"Approval transaction reverted: {tx_hash}")
+    print(f"  [approve] confirmed (block {receipt.blockNumber})")
     return tx_hash
 
 
