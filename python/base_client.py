@@ -11,9 +11,12 @@
 #    2. Fall back to pool slot0 sqrtPriceX96 spot price (works on any RPC)
 # ─────────────────────────────────────────────
 
+import logging
 import os
 import sys
 from pathlib import Path
+
+log = logging.getLogger("dca-bot")
 
 from dotenv import load_dotenv
 from web3 import Web3
@@ -245,33 +248,64 @@ def get_cbbtc_balance() -> float:
     return _cbbtc_from_raw(raw)
 
 
-def check_and_approve_usdc(amount_raw: int, nonce: int | None = None) -> str | None:
-    """Check current allowance; approve exact amount only if insufficient.
+def check_and_approve_usdc(
+    amount_raw: int,
+    nonce: int | None = None,
+) -> tuple[str | None, int | None]:
+    """Check current allowance; approve only if insufficient.
 
-    Returns tx hash if an approval was broadcast, else None.
+    Returns (approve_tx_hash | None, next_nonce).
+    next_nonce is the nonce the caller should use for its next transaction.
+    Handles the zero-first reset pattern if a stale non-zero allowance exists.
     Does nothing on-chain in DRY_RUN mode.
     """
-    allowance = usdc_contract.functions.allowance(_HOT, _ROUTER).call()
+    allowance     = usdc_contract.functions.allowance(_HOT, _ROUTER).call()
+    approve_amount = amount_raw + 1   # +1 raw unit buffer for fee-math rounding
+
+    log.info(f"[approve] spender        : {_ROUTER}")
+    log.info(f"[approve] current allowance: {allowance} raw = ${allowance / 10**USDC_DECIMALS:.6f} USDC")
+    log.info(f"[approve] required       : {approve_amount} raw = ${approve_amount / 10**USDC_DECIMALS:.6f} USDC")
 
     if allowance >= amount_raw:
-        print(f"  [approve] allowance sufficient ({allowance / 10**USDC_DECIMALS:.6f} USDC) -- skipping")
-        return None
-
-    shortfall = amount_raw / 10 ** USDC_DECIMALS
-    print(f"  [approve] insufficient allowance -- approving {shortfall:.6f} USDC")
+        log.info("[approve] allowance sufficient -- skipping")
+        return None, nonce
 
     if DRY_RUN:
-        print(f"  [approve] DRY RUN -- would approve {shortfall:.6f} USDC to SwapRouter02")
-        return None
+        log.info(f"[approve] DRY RUN -- would approve ${approve_amount / 10**USDC_DECIMALS:.6f} USDC to {_ROUTER}")
+        return None, nonce
 
-    tx = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, amount_raw), nonce=nonce)
+    next_nonce = nonce
+
+    # Some ERC-20 implementations require zeroing a non-zero allowance before
+    # setting a new value. Send a zero-approval first when that's the case.
+    if allowance > 0:
+        log.info(f"[approve] non-zero stale allowance ({allowance}) -- zeroing first")
+        zero_tx   = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, 0), nonce=next_nonce)
+        zero_hash = _sign_and_send(zero_tx)
+        log.info(f"[approve] zero-approval tx: {zero_hash}")
+        zero_receipt = w3.eth.wait_for_transaction_receipt(zero_hash, timeout=60)
+        if zero_receipt.status != 1:
+            raise Exception(f"Zero-approval transaction reverted: {zero_hash}")
+        log.info(f"[approve] zero-approval confirmed (block {zero_receipt.blockNumber})")
+        if next_nonce is not None:
+            next_nonce += 1
+
+    tx      = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, approve_amount), nonce=next_nonce)
     tx_hash = _sign_and_send(tx)
-    print(f"  [approve] tx: {tx_hash}")
+    log.info(f"[approve] tx: {tx_hash}")
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
     if receipt.status != 1:
         raise Exception(f"Approval transaction reverted: {tx_hash}")
-    print(f"  [approve] confirmed (block {receipt.blockNumber})")
-    return tx_hash
+
+    actual = usdc_contract.functions.allowance(_HOT, _ROUTER).call()
+    log.info(
+        f"[approve] confirmed (block {receipt.blockNumber}), "
+        f"on-chain allowance: {actual} raw = ${actual / 10**USDC_DECIMALS:.6f} USDC"
+    )
+
+    if next_nonce is not None:
+        next_nonce += 1
+    return tx_hash, next_nonce
 
 
 def get_quote(usdc_amount_usd: float) -> tuple[float, str]:
@@ -391,9 +425,10 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     usdc_raw = _usdc_to_raw(usdc_amount_usd)
     nonce    = w3.eth.get_transaction_count(account.address, "pending") if not DRY_RUN else 0
 
-    approve_hash = check_and_approve_usdc(usdc_raw, nonce=nonce)
-    if approve_hash:          # approval was broadcast — advance nonce
-        nonce += 1
+    # check_and_approve_usdc returns (hash | None, next_nonce) — next_nonce
+    # accounts for 0, 1, or 2 txs (zero-reset + approve) so the nonce
+    # sequence fed to swap and transfer is always correct.
+    approve_hash, nonce = check_and_approve_usdc(usdc_raw, nonce=nonce)
 
     # 4. Swap
     swap_hash = swap_usdc_to_cbbtc(usdc_amount_usd, nonce=nonce)
