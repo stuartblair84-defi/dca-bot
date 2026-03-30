@@ -373,7 +373,9 @@ def swap_usdc_to_cbbtc(usdc_amount_usd: float, slippage_bps: int = 50, nonce: in
     tx = _build_eip1559_tx(router.functions.multicall(deadline, [inner_calldata]), nonce=nonce)
     tx_hash = _sign_and_send(tx)
     print(f"  [swap] tx: {tx_hash}")
-    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    if receipt.status != 1:
+        raise Exception(f"Swap transaction reverted: {tx_hash}")
     return tx_hash
 
 
@@ -434,9 +436,10 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     swap_hash = swap_usdc_to_cbbtc(usdc_amount_usd, nonce=nonce)
     nonce += 1
 
-    # 5. Determine quantity received
-    #    Live: read actual post-swap balance so qty is exact.
-    #    Dry-run: use quoted amount.
+    # 5. Determine quantity received.
+    #    Always read actual on-chain balance after the swap is confirmed —
+    #    never use the pre-swap quote, which may be higher than what was
+    #    actually received due to slippage and fees.
     if DRY_RUN:
         cbbtc_raw = int(quoted * 10 ** CBBTC_DECIMALS)
     else:
@@ -444,6 +447,10 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
 
     qty   = _cbbtc_from_raw(cbbtc_raw)
     price = usdc_amount_usd / qty if qty > 0 else 0.0
+    log.info(
+        f"[swap] quoted {quoted:.8f} cbBTC, actual balance {qty:.8f} cbBTC "
+        f"(delta {qty - quoted:+.8f})"
+    )
 
     # 6. Transfer to cold wallet — caught here so a nonce or RPC failure
     #    after a successful swap does not prevent the caller from recording
