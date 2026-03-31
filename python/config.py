@@ -4,10 +4,10 @@
 # ─────────────────────────────────────────────
 
 # ── Mode ─────────────────────────────────────
-DRY_RUN = True              # True = simulate only, never execute
+DRY_RUN = False
 
 # ── Budget ───────────────────────────────────
-MONTHLY_BUDGET = 500.0                                    # USD per month for cbBTC
+MONTHLY_BUDGET = 2000.0                                    # USD per month for cbBTC
 RESERVE_PCT    = 0.40                                     # 40% of budget held in reserve pool
 DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$10.00/day (non-reserve)
 
