@@ -30,7 +30,7 @@ load_dotenv(Path(__file__).parent / ".env")
 import schedule
 import time
 
-from config import EXECUTION_TIME_UTC, DRY_RUN
+from config import EXECUTION_TIME_UTC, DRY_RUN, DAILY_DRIP, POOL_CAP_X
 
 import state   as state_mod
 import signals as signals_mod
@@ -106,6 +106,39 @@ def run_once() -> None:
                 signals    = scores_full,
             )
             log.info(f"Recorded: {qty:.8f} cbBTC @ ${btc_price:,.2f}")
+
+            # Notion logging — fire and forget, never raises
+            _pool_cap     = DAILY_DRIP * POOL_CAP_X
+            _target       = min(DAILY_DRIP * multiplier, _pool_cap)
+            _base_contrib = min(_target, bot_state.get("base_pool", 0.0))
+            buy_record = {
+                "buy_number":       len(portfolio.load_purchases()),
+                "date":             datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                "cycle_time_utc":   EXECUTION_TIME_UTC,
+                "usdc_spent":       buy_amount,
+                "cbbtc_received":   qty,
+                "price_usd":        btc_price,
+                "composite_score":  comp,
+                "multiplier":       multiplier,
+                "reserve_deployed": max(0.0, round(buy_amount - _base_contrib, 2)),
+                "swap_tx":          result.get("swap_tx", ""),
+                "transfer_tx":      result.get("transfer_tx"),
+                "transfer_ok":      not bool(result.get("transfer_error")),
+                "transfer_error":   result.get("transfer_error"),
+                "signals": {
+                    "fg_raw":      float(meta.get("fear_greed", {}).get("index", 0)),
+                    "fg_score":    scores.get("fear_greed", 0.0),
+                    "rsi":         meta.get("rsi", {}).get("rsi", 0.0),
+                    "ma200_score": scores.get("rsi", 0.0),
+                    "liq_score":   scores.get("liquidation", 0.0),
+                    "composite":   comp,
+                },
+            }
+            try:
+                from notion_logger import log_buy
+                log_buy(buy_record)
+            except Exception as e:
+                log.warning(f"Notion logging failed: {e}")
 
             bot_state = state_mod.record_execution(bot_state, buy_amount)
 
