@@ -186,12 +186,21 @@ def _spot_price_from_slot0() -> float:
     price_human = price_raw * (10 ** USDC_DECIMALS) / (10 ** CBBTC_DECIMALS)
     return price_human
 
-def _build_eip1559_tx(contract_fn, value_wei: int = 0, nonce: int | None = None) -> dict:
+def _build_eip1559_tx(
+    contract_fn,
+    value_wei: int = 0,
+    nonce: int | None = None,
+    gas_limit: int | None = None,
+) -> dict:
     """Build an EIP-1559 tx dict with 20% gas buffer.
 
     Pass nonce explicitly to avoid re-fetching from the node when chaining
     multiple transactions in one buy cycle (node may not have indexed prior
     txs yet, causing 'nonce too low' on the next tx).
+
+    Pass gas_limit to bypass estimate_gas() entirely and use a fixed ceiling
+    instead. Useful when the RPC is load-balanced and a different node may be
+    one block behind, causing the simulation to revert on stale state.
     """
     if nonce is None:
         nonce = w3.eth.get_transaction_count(account.address, "pending")
@@ -211,12 +220,15 @@ def _build_eip1559_tx(contract_fn, value_wei: int = 0, nonce: int | None = None)
         "maxPriorityFeePerGas": max_priority,
     })
 
-    # Estimate gas and apply 20% buffer
-    gas_est  = w3.eth.estimate_gas({"from": account.address,
-                                    "to":   tx["to"],
-                                    "data": tx["data"],
-                                    "value": value_wei})
-    tx["gas"] = int(gas_est * 1.2)
+    if gas_limit is not None:
+        tx["gas"] = gas_limit
+    else:
+        # Estimate gas and apply 20% buffer
+        gas_est  = w3.eth.estimate_gas({"from": account.address,
+                                        "to":   tx["to"],
+                                        "data": tx["data"],
+                                        "value": value_wei})
+        tx["gas"] = int(gas_est * 1.2)
     return tx
 
 def _sign_and_send(tx: dict) -> str:
@@ -391,7 +403,15 @@ def transfer_cbbtc_to_cold(amount_raw: int, nonce: int | None = None) -> str:
         print(f"  [transfer] DRY RUN -- would call cbBTC.transfer(cold_wallet, {amount_raw})")
         return "0x" + "0" * 64
 
-    tx = _build_eip1559_tx(cbbtc_contract.functions.transfer(_COLD, amount_raw), nonce=nonce)
+    # Use a hardcoded gas limit to bypass estimate_gas(). The publicnode.com RPC
+    # is load-balanced — estimate_gas() can hit a node that is one block behind,
+    # sees zero cbBTC balance, and reverts the simulation before broadcast.
+    # ERC-20 transfers cost ~65k gas; 100k is a safe fixed ceiling.
+    tx = _build_eip1559_tx(
+        cbbtc_contract.functions.transfer(_COLD, amount_raw),
+        nonce=nonce,
+        gas_limit=100_000,
+    )
     tx_hash = _sign_and_send(tx)
     print(f"  [transfer] tx: {tx_hash}")
     w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)

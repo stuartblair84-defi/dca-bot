@@ -68,5 +68,5 @@ KRAKEN_BTC_SYMBOL  = "XBTUSD"
 KRAKEN_DAILY       = 1440   # minutes — daily candles
 
 # ── Notion Integration ────────────────────────
-NOTION_PURCHASE_LEDGER_ID = "b95b8e65-19e0-4474-b16e-75fac7525189"
+NOTION_PURCHASE_LEDGER_ID = "64f45392-2b26-4930-9b0b-ab849320aaa2"
 NOTION_DAILY_BUY_LOG_ID   = "330fae9c-5f32-81fc-929e-d584fa99cd38"
