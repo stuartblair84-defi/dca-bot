@@ -107,7 +107,7 @@ def run_once() -> None:
             )
             log.info(f"Recorded: {qty:.8f} cbBTC @ ${btc_price:,.2f}")
 
-            # Notion logging — fire and forget, never raises
+            # File logging — fire and forget, never raises
             _pool_cap     = DAILY_DRIP * POOL_CAP_X
             _target       = min(DAILY_DRIP * multiplier, _pool_cap)
             _base_contrib = min(_target, bot_state.get("base_pool", 0.0))
@@ -135,10 +135,10 @@ def run_once() -> None:
                 },
             }
             try:
-                from notion_logger import log_buy
+                from file_logger import log_buy
                 log_buy(buy_record)
-            except Exception as e:
-                log.warning(f"Notion logging failed: {e}")
+            except Exception as exc:
+                log.warning(f"File logging failed: {exc}")
 
             bot_state = state_mod.record_execution(bot_state, buy_amount)
 

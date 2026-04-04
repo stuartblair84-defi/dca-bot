@@ -24,7 +24,6 @@ httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
 multidict==6.7.1
-notion-client==3.0.0
 numpy==2.4.3
 pandas==3.0.1
 parsimonious==0.10.0

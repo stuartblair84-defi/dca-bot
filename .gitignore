@@ -10,3 +10,5 @@ config_backup.txt
 *.env
 
 .claude/
+purchase_ledger.csv
+daily_buy_log.md
