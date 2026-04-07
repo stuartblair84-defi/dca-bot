@@ -292,7 +292,7 @@ def check_and_approve_usdc(
     # setting a new value. Send a zero-approval first when that's the case.
     if allowance > 0:
         log.info(f"[approve] non-zero stale allowance ({allowance}) -- zeroing first")
-        zero_tx   = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, 0), nonce=next_nonce)
+        zero_tx   = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, 0), nonce=next_nonce, gas_limit=100_000)
         zero_hash = _sign_and_send(zero_tx)
         log.info(f"[approve] zero-approval tx: {zero_hash}")
         zero_receipt = w3.eth.wait_for_transaction_receipt(zero_hash, timeout=60)
@@ -302,7 +302,7 @@ def check_and_approve_usdc(
         if next_nonce is not None:
             next_nonce += 1
 
-    tx      = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, approve_amount), nonce=next_nonce)
+    tx      = _build_eip1559_tx(usdc_contract.functions.approve(_ROUTER, approve_amount), nonce=next_nonce, gas_limit=100_000)
     tx_hash = _sign_and_send(tx)
     log.info(f"[approve] tx: {tx_hash}")
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
