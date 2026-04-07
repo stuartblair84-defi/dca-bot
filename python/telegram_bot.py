@@ -704,13 +704,15 @@ def register_reschedule_fn(fn) -> None:
 
 
 def send_buy_alert(
-    qty:        float,
-    price_usd:  float,
-    usdc_spent: float,
-    comp_score: float,
-    multiplier: float,
-    tx_hash:    str,
-    summary:    dict,
+    qty:            float,
+    price_usd:      float,
+    usdc_spent:     float,
+    comp_score:     float,
+    multiplier:     float,
+    tx_hash:        str,
+    summary:        dict,
+    transfer_ok:    bool = True,
+    transfer_error: str  = "",
 ) -> None:
     """Send a DCA buy alert to the configured Telegram chat.
 
@@ -721,8 +723,9 @@ def send_buy_alert(
     if not token or not chat_id:
         return
 
-    tx_short = f"{tx_hash[:6]}...{tx_hash[-4:]}" if len(tx_hash) > 12 else tx_hash or "n/a"
-    sign     = "+" if summary.get("unrealised_pnl", 0) >= 0 else ""
+    tx_short   = f"{tx_hash[:6]}...{tx_hash[-4:]}" if len(tx_hash) > 12 else tx_hash or "n/a"
+    sign       = "+" if summary.get("unrealised_pnl", 0) >= 0 else ""
+    xfer_line  = "✅ Cold wallet" if transfer_ok else f"⚠️ HOT WALLET — {transfer_error}"
 
     text = (
         f"DCA Buy Executed\n"
@@ -732,6 +735,7 @@ def send_buy_alert(
         f"Spent: <b>${usdc_spent:.2f} USDC</b>\n"
         f"Score: <b>{comp_score:.2f} ({multiplier:.1f}x)</b>\n"
         f"Tx: <code>{tx_short}</code>\n"
+        f"Transfer: <b>{xfer_line}</b>\n"
         f"\n"
         f"Portfolio: <b>{summary.get('total_qty', 0):.8f} cbBTC</b>"
         f" | avg ${summary.get('avg_entry_price', 0):,.0f}"
@@ -748,7 +752,7 @@ def send_buy_alert(
         log.warning(f"Buy alert failed: {exc}")
 
 
-def send_transfer_failed_alert(qty: float, error: str) -> None:
+def send_transfer_failed_alert(qty: float, swap_tx_hash: str, error: str) -> None:
     """Send an urgent alert when the swap succeeded but cold-wallet transfer failed.
 
     Standalone — works whether or not the polling bot is running.
@@ -758,13 +762,20 @@ def send_transfer_failed_alert(qty: float, error: str) -> None:
     if not token or not chat_id:
         return
 
+    tx_short = (
+        f"{swap_tx_hash[:6]}...{swap_tx_hash[-4:]}"
+        if len(swap_tx_hash) > 12 else swap_tx_hash or "n/a"
+    )
+
     text = (
-        f"<b>WARNING: Transfer to cold wallet failed</b>\n"
+        f"<b>⚠️ DCA Cycle — Transfer Failed</b>\n"
         f"\n"
-        f"Swap succeeded — <b>{qty:.8f} cbBTC</b> is sitting in the hot wallet.\n"
-        f"Manual transfer to cold wallet is required.\n"
+        f"Swap succeeded — <b>{qty:.8f} cbBTC</b> is stuck in the hot wallet.\n"
+        f"Swap tx: <code>{tx_short}</code>\n"
         f"\n"
-        f"Error: <code>{error}</code>"
+        f"Error: <code>{error}</code>\n"
+        f"\n"
+        f"Manual transfer required."
     )
 
     try:
@@ -775,3 +786,79 @@ def send_transfer_failed_alert(qty: float, error: str) -> None:
         )
     except Exception as exc:
         log.warning(f"Transfer-failed alert send error: {exc}")
+
+
+def _next_run_date() -> str:
+    """Return tomorrow's date formatted as '8 Apr 2026'."""
+    tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
+    return f"{tomorrow.day} {tomorrow.strftime('%b %Y')}"
+
+
+def _standalone_send(text: str) -> None:
+    """Fire-and-forget sendMessage. Never raises."""
+    token   = os.getenv("TELEGRAM_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+    except Exception as exc:
+        log.warning(f"Telegram send failed: {exc}")
+
+
+def send_no_buy_alert(
+    comp_score: float,
+    threshold:  float,
+    scores:     dict,
+    title:      str = "🚫 DCA Cycle — No Buy Zone",
+) -> None:
+    """Send a no-buy notification. Covers no-buy zone and pool-empty cycles.
+
+    Standalone — works whether or not the polling bot is running.
+    """
+    fg  = scores.get("fear_greed",  0.0)
+    rsi = scores.get("rsi",         0.0)
+    liq = scores.get("liquidation", 0.0)
+
+    text = (
+        f"<b>{title}</b>\n"
+        f"\n"
+        f"Score: <b>{comp_score:.2f}</b>  (threshold: {threshold})\n"
+        f"Signals: F&amp;G {fg:.2f} | RSI/MA200 {rsi:.2f} | Liq {liq:.2f}\n"
+        f"\n"
+        f"No purchase made.  Next run: {_next_run_date()} 00:20 UTC"
+    )
+    _standalone_send(text)
+
+
+def send_paused_alert() -> None:
+    """Send a paused-cycle notification.
+
+    Standalone — works whether or not the polling bot is running.
+    """
+    text = (
+        f"<b>⏸️ DCA Cycle — Paused</b>\n"
+        f"\n"
+        f"Next run: {_next_run_date()} 00:20 UTC"
+    )
+    _standalone_send(text)
+
+
+def send_cycle_error_alert(error: str) -> None:
+    """Send a critical alert when run_once() raises an unhandled exception.
+
+    Standalone — works whether or not the polling bot is running.
+    """
+    text = (
+        f"<b>🔴 DCA Cycle ERROR — Action Required</b>\n"
+        f"\n"
+        f"Error: <code>{error}</code>\n"
+        f"\n"
+        f"No buy was made.  Check VPS logs:\n"
+        f"<code>journalctl -u dca-bot --since \"today\" --no-pager</code>"
+    )
+    _standalone_send(text)

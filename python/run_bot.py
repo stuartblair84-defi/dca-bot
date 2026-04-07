@@ -30,7 +30,7 @@ load_dotenv(Path(__file__).parent / ".env")
 import schedule
 import time
 
-from config import EXECUTION_TIME_UTC, DRY_RUN, DAILY_DRIP, POOL_CAP_X
+from config import EXECUTION_TIME_UTC, DRY_RUN, DAILY_DRIP, POOL_CAP_X, NO_BUY_THRESHOLD, NO_BUY_ZONE
 
 import state   as state_mod
 import signals as signals_mod
@@ -145,23 +145,38 @@ def run_once() -> None:
             # Alert if transfer to cold wallet failed
             if result.get("transfer_error"):
                 log.error(f"Transfer to cold wallet FAILED: {result['transfer_error']}")
-                telegram_bot.send_transfer_failed_alert(qty, result["transfer_error"])
+                telegram_bot.send_transfer_failed_alert(
+                    qty          = qty,
+                    swap_tx_hash = result.get("swap_tx", ""),
+                    error        = result["transfer_error"],
+                )
 
             # Telegram buy alert
             summary = portfolio.get_summary()
             telegram_bot.send_buy_alert(
-                qty        = qty,
-                price_usd  = btc_price,
-                usdc_spent = buy_amount,
-                comp_score = comp,
-                multiplier = multiplier,
-                tx_hash    = result.get("swap_tx", ""),
-                summary    = summary,
+                qty            = qty,
+                price_usd      = btc_price,
+                usdc_spent     = buy_amount,
+                comp_score     = comp,
+                multiplier     = multiplier,
+                tx_hash        = result.get("swap_tx", ""),
+                summary        = summary,
+                transfer_ok    = not bool(result.get("transfer_error")),
+                transfer_error = result.get("transfer_error") or "",
             )
         elif paused:
             log.info("Buy skipped — bot is paused (/resume to re-enable).")
+            telegram_bot.send_paused_alert()
         else:
-            log.info("No buy this cycle (pool empty or budget exhausted).")
+            if NO_BUY_ZONE and comp < NO_BUY_THRESHOLD:
+                log.info(f"Buy skipped — score {comp:.4f} below no-buy threshold {NO_BUY_THRESHOLD}.")
+                telegram_bot.send_no_buy_alert(comp, NO_BUY_THRESHOLD, scores)
+            else:
+                log.info("No buy this cycle (pool empty or budget exhausted).")
+                telegram_bot.send_no_buy_alert(
+                    comp, NO_BUY_THRESHOLD, scores,
+                    title="🟡 DCA Cycle — No Buy",
+                )
 
         # Save state regardless
         state_mod.save_state(bot_state)
@@ -180,6 +195,7 @@ def run_once() -> None:
 
     except Exception as exc:
         log.error(f"Cycle error (continuing): {exc}", exc_info=True)
+        telegram_bot.send_cycle_error_alert(str(exc))
 
     log.info("Cycle complete.")
 
