@@ -382,7 +382,10 @@ def swap_usdc_to_cbbtc(usdc_amount_usd: float, slippage_bps: int = 50, nonce: in
         "sqrtPriceLimitX96": 0,
     }
     inner_calldata = router.encode_abi("exactInputSingle", args=[swap_params])
-    tx = _build_eip1559_tx(router.functions.multicall(deadline, [inner_calldata]), nonce=nonce)
+    # Bypass estimate_gas to avoid stale RPC state on load-balanced publicnode.com
+    # nodes — same fix as approve and transfer. Uniswap V3 exactInputSingle via
+    # multicall typically costs 150k-200k gas; 300k is a safe fixed ceiling.
+    tx = _build_eip1559_tx(router.functions.multicall(deadline, [inner_calldata]), nonce=nonce, gas_limit=300_000)
     tx_hash = _sign_and_send(tx)
     print(f"  [swap] tx: {tx_hash}")
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
