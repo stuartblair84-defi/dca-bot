@@ -60,6 +60,7 @@ def run_once() -> None:
         bot_state = state_mod.drip_pool(bot_state)
         log.info(f"Pool: ${bot_state['base_pool']:.2f}  "
                  f"Month spent: ${bot_state['month_spent']:.2f}")
+        state_mod.save_state(bot_state)  # persist drip before buy attempt
 
         # 2. Signals
         log.info("Fetching signals ...")

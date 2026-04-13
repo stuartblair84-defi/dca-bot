@@ -14,6 +14,7 @@
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 log = logging.getLogger("dca-bot")
@@ -466,7 +467,18 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     if DRY_RUN:
         cbbtc_raw = int(quoted * 10 ** CBBTC_DECIMALS)
     else:
-        cbbtc_raw = cbbtc_contract.functions.balanceOf(account.address).call()
+        # Wait 3 seconds for the RPC cluster to propagate swap state before
+        # reading balance or broadcasting the transfer.
+        time.sleep(3)
+        # Poll balanceOf up to 5 times with 2-second intervals until > 0.
+        cbbtc_raw = 0
+        for _poll in range(5):
+            cbbtc_raw = cbbtc_contract.functions.balanceOf(account.address).call()
+            if cbbtc_raw > 0:
+                break
+            if _poll < 4:
+                log.info(f"[swap] balanceOf returned 0, retrying in 2s ({_poll + 1}/5) ...")
+                time.sleep(2)
 
     qty   = _cbbtc_from_raw(cbbtc_raw)
     price = usdc_amount_usd / qty if qty > 0 else 0.0
@@ -478,10 +490,21 @@ def buy_cbbtc(usdc_amount_usd: float) -> dict:
     # 6. Transfer to cold wallet — caught here so a nonce or RPC failure
     #    after a successful swap does not prevent the caller from recording
     #    the purchase and updating state.
+    #    Retry up to 3 times on "exceeds balance" (stale RPC pre-flight);
+    #    any other error fails immediately.
     transfer_hash  = None
     transfer_error = None
     try:
-        transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw, nonce=nonce)
+        for attempt in range(1, 4):
+            try:
+                transfer_hash = transfer_cbbtc_to_cold(cbbtc_raw, nonce=nonce)
+                break
+            except Exception as exc:
+                if "exceeds balance" in str(exc).lower() and attempt < 3:
+                    log.warning(f"[transfer] retry {attempt}/3 after exceeds-balance — waiting 3s")
+                    time.sleep(3)
+                else:
+                    raise
     except Exception as exc:
         transfer_error = str(exc)
         print(f"  [transfer] FAILED: {exc}")
