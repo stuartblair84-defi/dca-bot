@@ -211,7 +211,12 @@ def _build_eip1559_tx(
     max_priority = w3.eth.max_priority_fee
     max_fee      = base_fee * 2 + max_priority
 
-    tx = contract_fn.build_transaction({
+    # web3.py's fill_transaction_defaults() calls estimate_gas() internally
+    # inside build_transaction() when "gas" is absent from the tx dict. Setting
+    # tx["gas"] after the call is too late — the estimate already happened.
+    # Including "gas" in the dict passed to build_transaction() prevents
+    # fill_transaction_defaults from ever invoking estimate_gas().
+    tx_fields = {
         "from":                 account.address,
         "nonce":                nonce,
         "type":                 2,
@@ -219,16 +224,18 @@ def _build_eip1559_tx(
         "value":                value_wei,
         "maxFeePerGas":         max_fee,
         "maxPriorityFeePerGas": max_priority,
-    })
-
+    }
     if gas_limit is not None:
-        tx["gas"] = gas_limit
-    else:
+        tx_fields["gas"] = gas_limit
+    tx = contract_fn.build_transaction(tx_fields)
+    if gas_limit is None:
         # Estimate gas and apply 20% buffer
-        gas_est  = w3.eth.estimate_gas({"from": account.address,
-                                        "to":   tx["to"],
-                                        "data": tx["data"],
-                                        "value": value_wei})
+        gas_est = w3.eth.estimate_gas({
+            "from":  account.address,
+            "to":    tx["to"],
+            "data":  tx["data"],
+            "value": value_wei,
+        })
         tx["gas"] = int(gas_est * 1.2)
     return tx
 
