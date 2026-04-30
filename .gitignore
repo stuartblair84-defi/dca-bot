@@ -12,3 +12,4 @@ config_backup.txt
 .claude/
 purchase_ledger.csv
 daily_buy_log.md
+funding_ledger.csv

@@ -11,13 +11,17 @@
 
 import csv
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("dca-bot")
 
-_BASE_DIR = Path(__file__).parent.parent
-_CSV_PATH = _BASE_DIR / "purchase_ledger.csv"
-_MD_PATH  = _BASE_DIR / "daily_buy_log.md"
+_BASE_DIR     = Path(__file__).parent.parent
+_CSV_PATH     = _BASE_DIR / "purchase_ledger.csv"
+_MD_PATH      = _BASE_DIR / "daily_buy_log.md"
+_FUNDING_PATH = _BASE_DIR / "funding_ledger.csv"
+
+_FUNDING_CSV_COLUMNS = ["date", "amount_usdc", "tx_hash", "notes"]
 
 _CSV_COLUMNS = [
     "buy_number", "date", "cycle_time_utc", "usdc_spent", "cbbtc_received",
@@ -80,6 +84,22 @@ def _append_md(buy_record: dict) -> None:
 
     with _MD_PATH.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def log_deposit(amount_usdc: float, tx_hash: str, notes: str = "") -> None:
+    """Append one deposit row to funding_ledger.csv."""
+    try:
+        write_header = not _FUNDING_PATH.exists()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        with _FUNDING_PATH.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_FUNDING_CSV_COLUMNS, extrasaction="ignore")
+            if write_header:
+                writer.writeheader()
+            writer.writerow({"date": today, "amount_usdc": f"{amount_usdc:.2f}",
+                             "tx_hash": tx_hash, "notes": notes})
+        log.info(f"[file_logger] funding row written to {_FUNDING_PATH}")
+    except Exception as exc:
+        log.warning(f"[file_logger] funding CSV write failed: {exc}")
 
 
 def log_buy(buy_record: dict) -> None:

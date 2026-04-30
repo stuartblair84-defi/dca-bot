@@ -181,6 +181,8 @@ class TelegramBot:
             "/signals": self._cmd_signals,
             "/history": self._cmd_history,
             "/config":  self._cmd_config,
+            "/balance": self._cmd_balance,
+            "/funding": self._cmd_funding,
             "/pause":   self._cmd_pause,
             "/resume":  self._cmd_resume,
             "/help":    self._cmd_help,
@@ -380,6 +382,99 @@ class TelegramBot:
             )
         self.send("\n".join(lines))
 
+    # ── /balance ──────────────────────────────
+
+    def _cmd_balance(self) -> None:
+        try:
+            from base_client import usdc_contract, cbbtc_contract
+            from web3 import Web3
+            import config as cfg
+
+            hot  = Web3.to_checksum_address(cfg.HOT_WALLET)
+            cold = Web3.to_checksum_address(cfg.COLD_WALLET)
+
+            usdc_raw       = usdc_contract.functions.balanceOf(hot).call()
+            usdc_bal       = usdc_raw / 10 ** cfg.USDC_DECIMALS
+
+            cbbtc_hot_raw  = cbbtc_contract.functions.balanceOf(hot).call()
+            cbbtc_hot      = cbbtc_hot_raw / 10 ** cfg.CBBTC_DECIMALS
+
+            cbbtc_cold_raw = cbbtc_contract.functions.balanceOf(cold).call()
+            cbbtc_cold     = cbbtc_cold_raw / 10 ** cfg.CBBTC_DECIMALS
+
+            hot_short  = f"{cfg.HOT_WALLET[:6]}...{cfg.HOT_WALLET[-4:]}"
+            cold_short = f"{cfg.COLD_WALLET[:6]}...{cfg.COLD_WALLET[-4:]}"
+
+            self.send(
+                f"<b>Wallet Balances</b>\n"
+                f"\n"
+                f"USDC  (hot wallet) : <b>${usdc_bal:,.2f}</b>\n"
+                f"cbBTC (hot wallet) : <b>{cbbtc_hot:.8f}</b>\n"
+                f"cbBTC (cold wallet): <b>{cbbtc_cold:.8f}</b>\n"
+                f"\n"
+                f"Hot : <code>{hot_short}</code>\n"
+                f"Cold: <code>{cold_short}</code>"
+            )
+        except Exception as exc:
+            self.send(f"RPC error fetching balances: {exc}")
+
+    # ── /funding ──────────────────────────────
+
+    def _cmd_funding(self) -> None:
+        import csv as csv_mod
+
+        base_dir       = Path(__file__).parent.parent
+        funding_path   = base_dir / "funding_ledger.csv"
+        purchases_path = base_dir / "purchase_ledger.csv"
+
+        try:
+            if not funding_path.exists():
+                self.send(
+                    "funding_ledger.csv not found on VPS.\n"
+                    "Copy the seed file first:\n"
+                    "<code>cp ~/dca-bot/funding_ledger.csv.seed ~/dca-bot/funding_ledger.csv</code>"
+                )
+                return
+
+            deposits: list[dict] = []
+            with funding_path.open(encoding="utf-8") as f:
+                for row in csv_mod.DictReader(f):
+                    deposits.append(row)
+
+            total_deposited = sum(float(d["amount_usdc"]) for d in deposits)
+
+            total_spent = 0.0
+            if purchases_path.exists():
+                with purchases_path.open(encoding="utf-8") as f:
+                    for row in csv_mod.DictReader(f):
+                        try:
+                            total_spent += float(row.get("usdc_spent", 0))
+                        except (ValueError, TypeError):
+                            pass
+            else:
+                self.send("⚠️ purchase_ledger.csv not found — spent total shown as $0.00.")
+
+            implied_balance = total_deposited - total_spent
+
+            lines = ["<b>Funding Summary</b>", ""]
+            for d in deposits:
+                lines.append(
+                    f"{d['date']}  <b>${float(d['amount_usdc']):,.2f}</b>"
+                    f"  — {d.get('notes', '')}"
+                )
+            lines += [
+                "",
+                f"Total deposited : <b>${total_deposited:,.2f}</b>",
+                f"Total spent     : <b>${total_spent:,.2f}</b>",
+                f"Net consumed    : <b>${total_spent:,.2f}</b>",
+                f"Implied balance : <b>${implied_balance:,.2f}</b>",
+                "",
+                "<i>Use /balance for live on-chain figure.</i>",
+            ]
+            self.send("\n".join(lines))
+        except Exception as exc:
+            self.send(f"Error reading funding data: {exc}")
+
     # ── /config ───────────────────────────────
 
     def _cmd_config(self) -> None:
@@ -578,6 +673,8 @@ class TelegramBot:
             "/signals           — live signal scores\n"
             "/history           — last 10 buys\n"
             "/config            — view all settings\n"
+            "/balance           — live on-chain wallet balances\n"
+            "/funding           — deposit history &amp; implied balance\n"
             "/set &lt;key&gt; &lt;value&gt;  — change a setting\n"
             "/pause             — pause buying\n"
             "/resume            — resume buying\n"
