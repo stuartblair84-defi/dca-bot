@@ -20,7 +20,7 @@ RESERVE_THRESHOLD  = 0.65   # composite score required to release reserve funds
 RESERVE_MAX_MONTHS = 6      # reserve ceiling = (MONTHLY_BUDGET × RESERVE_PCT) × 6
 
 # ── No-buy zone ───────────────────────────────
-NO_BUY_ZONE       = True    # skip buy entirely when score is too low
+NO_BUY_ZONE       = False    # skip buy entirely when score is too low
 NO_BUY_THRESHOLD  = 0.35    # skip if composite score is below this
 
 # ── Signal Weights (must sum to 1.0) ─────────
@@ -33,11 +33,11 @@ SIGNAL_WEIGHTS = {
 # ── Multiplier Tiers ─────────────────────────
 # (min_score_threshold, multiplier)  — evaluated top-down
 MULTIPLIER_TIERS = [
-    (0.80, 5.0),
-    (0.65, 3.0),
-    (0.50, 2.0),
-    (0.35, 1.5),
-    (0.20, 1.0),
+    (0.80, 8.0),
+    (0.65, 4.0),
+    (0.50, 1.0),
+    (0.35, 1.0),
+    (0.20, 0.5),
     (0.00, 0.5),
 ]
 
