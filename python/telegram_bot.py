@@ -945,6 +945,22 @@ def send_paused_alert() -> None:
     _standalone_send(text)
 
 
+def send_low_balance_alert(available: float, needed: float) -> None:
+    """Send an alert when a buy cycle is skipped due to insufficient hot wallet USDC.
+
+    Standalone — works whether or not the polling bot is running.
+    """
+    text = (
+        f"<b>⚠️ DCA Cycle — Skipped: Low Balance</b>\n"
+        f"\n"
+        f"Hot wallet balance : <b>${available:.2f}</b>\n"
+        f"Intended buy       : <b>${needed:.2f}</b>\n"
+        f"\n"
+        f"Top-up recommended.  Next run: {_next_run_date()} 00:20 UTC"
+    )
+    _standalone_send(text)
+
+
 def send_cycle_error_alert(error: str) -> None:
     """Send a critical alert when run_once() raises an unhandled exception.
 

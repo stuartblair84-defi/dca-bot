@@ -9,7 +9,6 @@ from config import (
     MULTIPLIER_TIERS,
     POOL_CAP_X,
     DAILY_DRIP,
-    MONTHLY_BUDGET,
     USE_RESERVE,
     RESERVE_THRESHOLD,
     NO_BUY_ZONE,
@@ -49,16 +48,18 @@ def calc_buy_amount(score: float, state: dict) -> float:
     Base logic:
         target     = DAILY_DRIP x multiplier, capped at POOL_CAP_X x DAILY_DRIP
         buy        = min(target, base_pool)
-        buy        = min(buy, remaining monthly budget)
 
     Reserve release (when USE_RESERVE and score >= RESERVE_THRESHOLD):
         shortfall  = target - base_pool contribution  (what base_pool couldn't cover)
         reserve_add = min(shortfall, reserve_pool)
         buy       += reserve_add
 
+    The monthly budget is NOT enforced here. The live gate is the hot wallet USDC
+    balance checked immediately before execution in run_bot.run_once().
+
     Args:
         score: composite signal score 0-1.
-        state: dict with 'base_pool', 'reserve_pool', and 'month_spent' keys.
+        state: dict with 'base_pool' and 'reserve_pool' keys.
 
     Returns:
         Dollar amount to spend, rounded to 2 dp.
@@ -76,10 +77,6 @@ def calc_buy_amount(score: float, state: dict) -> float:
         reserve_avail = state.get("reserve_pool", 0.0)
         shortfall     = max(0.0, target - buy_amount)
         buy_amount   += min(shortfall, reserve_avail)
-
-    # Never exceed remaining monthly ceiling
-    remaining  = MONTHLY_BUDGET - state.get("month_spent", 0.0)
-    buy_amount = min(buy_amount, max(remaining, 0.0))
 
     return round(buy_amount, 2)
 

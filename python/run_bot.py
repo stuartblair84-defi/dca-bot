@@ -90,6 +90,19 @@ def run_once() -> None:
 
         # 4. Execute (or dry-run)
         if buying and not paused:
+            # Pre-flight: check actual hot wallet USDC balance before committing.
+            # If insufficient, skip entirely (state already saved; drip carries forward).
+            usdc_balance = base_client.get_usdc_balance()
+            if usdc_balance < buy_amount:
+                log.info(
+                    f"No buy: insufficient hot wallet balance "
+                    f"(${usdc_balance:.2f} available, ${buy_amount:.2f} needed)."
+                )
+                telegram_bot.send_low_balance_alert(usdc_balance, buy_amount)
+                state_mod.save_state(bot_state)
+                log.info("Cycle complete.")
+                return
+
             log.info(f"{'[DRY RUN] ' if DRY_RUN else ''}Buying ${buy_amount:.2f} of cbBTC ...")
 
             result    = base_client.buy_cbbtc(buy_amount)
@@ -170,10 +183,18 @@ def run_once() -> None:
             telegram_bot.send_paused_alert()
         else:
             if NO_BUY_ZONE and comp < NO_BUY_THRESHOLD:
-                log.info(f"Buy skipped — score {comp:.4f} below no-buy threshold {NO_BUY_THRESHOLD}.")
+                log.info(
+                    f"No buy: composite score {comp:.4f} below NO_BUY_THRESHOLD "
+                    f"{NO_BUY_THRESHOLD} (NO_BUY_ZONE enabled)."
+                )
                 telegram_bot.send_no_buy_alert(comp, NO_BUY_THRESHOLD, scores)
             else:
-                log.info("No buy this cycle (pool empty or budget exhausted).")
+                pool_bal    = bot_state.get("base_pool", 0.0)
+                reserve_bal = bot_state.get("reserve_pool", 0.0)
+                log.info(
+                    f"No buy: pool empty — base ${pool_bal:.2f}, "
+                    f"reserve ${reserve_bal:.2f}, score {comp:.4f}."
+                )
                 telegram_bot.send_no_buy_alert(
                     comp, NO_BUY_THRESHOLD, scores,
                     title="🟡 DCA Cycle — No Buy",

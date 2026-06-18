@@ -1,5 +1,5 @@
 # CLAUDE.md — SMART DCA BOT CONTEXT BRIDGE
-> Last updated: 1 June 2026
+> Last updated: 18 June 2026
 > Purpose: Primary context file for both Claude Code (CLI) and Web Chat sessions.
 > Rule: Always read this file first. Never scan Notion workspace to reconstruct state.
 
@@ -51,10 +51,10 @@ run_bot.py         — daily scheduler, run_once(), run_daemon()
 
 ---
 
-## CURRENT CONFIG (`config.py`) — updated 1 June 2026
+## CURRENT CONFIG (`config.py`) — updated 18 June 2026
 
 ```python
-MONTHLY_BUDGET        = 2000.0
+MONTHLY_BUDGET        = 2000.0    # descriptive/reporting only — NOT enforced as a buy gate
 RESERVE_PCT           = 0.40
 DAILY_DRIP            = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30  # ~$40/day
 POOL_CAP_X            = 5.0       # base pool ceiling = ~$200
@@ -77,7 +77,15 @@ DRY_RUN               = False
 4. if USE_RESERVE and score >= 0.65:
        reserve_amt = min(shortfall, reserve_pool)
 5. total_spend = base_amt + reserve_amt
+6. PRE-FLIGHT: fetch hot wallet USDC balance on-chain
+       if balance < total_spend: skip cycle entirely (drip carries forward)
+       if balance >= total_spend: execute at full intended size
 ```
+
+> **Buy gate (as of 18 Jun 2026):** Hot wallet USDC balance, not monthly budget.
+> MONTHLY_BUDGET is no longer enforced anywhere in the buy decision path — it is kept
+> purely for reserve top-up math (state.py) and display (/status, /config).
+> The bot will spend as long as the hot wallet has funds, regardless of month-to-date total.
 
 ---
 
@@ -165,9 +173,11 @@ Month spent       : $0      (May just started at last update)
 ## KNOWN FIXES & KEY LEARNINGS
 
 - **RPC stale node (publicnode.com):** `estimate_gas()` hits stale load-balanced nodes after swap. Fix: hardcode gas limits — approve 100k, swap 300k, transfer 100k. Pass `"gas"` key *inside* `build_transaction()` dict, not after. Also: 3s sleep + balanceOf retry loop + 3× transfer retry in `buy_cbbtc()`.
-- **State persistence:** Save state before buy execution so failed cycles carry drip forward correctly.
+- **State persistence:** Save state before buy execution so failed cycles carry drip forward correctly. Also applies to wallet-balance skip: drip is persisted before the balance check, so skipped days carry forward automatically.
 - **Notion logging retired:** Replaced with `file_logger.py` writing to local CSV + MD files on VPS.
 - **DAILY_DRIP:** Never set directly — auto-derives from `MONTHLY_BUDGET`. No `/set daily_drip`.
+- **Monthly budget gate removed (Jun 2026):** MONTHLY_BUDGET was silently blocking buys after aggressive 8× spending stretch exhausted the $2,000 cap mid-month. Fixed: `dca_engine.calc_buy_amount()` no longer caps against remaining monthly budget. New live gate is hot wallet USDC balance, checked on-chain immediately before each swap. If balance < intended buy: cycle skips (drip carries), Telegram alert fires. Log messages now state the precise skip reason.
+- **No-buy log messages:** Each skip reason now logs distinctly — "No buy: insufficient hot wallet balance ($X available, $Y needed)", "No buy: pool empty — base $X, reserve $Y, score Z", "No buy: composite score below NO_BUY_THRESHOLD (if NO_BUY_ZONE enabled)".
 - **Claude Code git discipline:** Always include "Commit all changes and push to GitHub origin main" in prompts. Omitting this leaves changes local only.
 - **CVE-2026-31431 "Copy Fail" (May 2026):** Local privilege escalation in kernel `algif_aead` module. Mitigation applied: `algif_aead` blacklisted via `/etc/modprobe.d/disable-algif.conf`. Safe — does not affect dca-bot. Once Debian releases patched kernel: `sudo apt update && sudo apt upgrade -y`, reboot, then remove `/etc/modprobe.d/disable-algif.conf`. Track: https://security-tracker.debian.org/tracker/CVE-2026-31431
 
@@ -188,3 +198,4 @@ Month spent       : $0      (May just started at last update)
 > Append timestamped notes during each session. Clear when stale.
 
 - 1 Jun 2026: Updated multiplier tiers — new config: 0.5× (<0.35), 1.0× (0.35–0.64), 4.0× (0.65–0.79), 8.0× (≥0.80). NO_BUY_ZONE set to False. Strategy: flat daily DCA + heavy reserve deployment on high-conviction signals. Deployed to VPS via git push/pull.
+- 18 Jun 2026: Replaced monthly-budget buy gate with hot-wallet USDC balance check. Root cause: 8× spending Jun 2–6 exhausted $2k cap on Jun 13; bot sat out Jun 14–17 despite scores 0.53–0.62. Fix: removed MONTHLY_BUDGET cap from dca_engine.calc_buy_amount(); added on-chain balance preflight in run_bot.run_once() before each swap; added send_low_balance_alert() Telegram alert; fixed all no-buy log messages to state exact reason.

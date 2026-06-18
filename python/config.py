@@ -7,9 +7,9 @@
 DRY_RUN = False
 
 # ── Budget ───────────────────────────────────
-MONTHLY_BUDGET = 2000.0                                    # USD per month for cbBTC
+MONTHLY_BUDGET = 2000.0                                    # USD per month (descriptive/reporting only — not enforced as a buy gate)
 RESERVE_PCT    = 0.40                                     # 40% of budget held in reserve pool
-DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$10.00/day (non-reserve)
+DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$40.00/day (non-reserve)
 
 # ── Pool pacing ───────────────────────────────
 POOL_CAP_X = 5.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$50.00)
