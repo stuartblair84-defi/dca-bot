@@ -13,3 +13,6 @@ config_backup.txt
 purchase_ledger.csv
 daily_buy_log.md
 funding_ledger.csv
+
+# Working artefacts — task briefs handed to Claude Code, not part of the repo
+claude-code-prompt-*.md
