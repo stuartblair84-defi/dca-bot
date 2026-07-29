@@ -14,5 +14,13 @@ purchase_ledger.csv
 daily_buy_log.md
 funding_ledger.csv
 
+# Backups of the runtime data files above. The originals are already ignored,
+# but a dated copy taken before hand-editing a ledger is not covered by their
+# names, so it shows up as untracked and one stray `git add -A` commits your
+# funding history into a public repo.
+*.bak
+*.bak-*
+*.backup
+
 # Working artefacts — task briefs handed to Claude Code, not part of the repo
 claude-code-prompt-*.md
