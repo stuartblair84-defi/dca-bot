@@ -1,5 +1,5 @@
 # CLAUDE.md — SMART DCA BOT CONTEXT BRIDGE
-> Last updated: 18 June 2026
+> Last updated: 29 July 2026
 > Purpose: Primary context file for both Claude Code (CLI) and Web Chat sessions.
 > Rule: Always read this file first. Never scan Notion workspace to reconstruct state.
 
@@ -18,7 +18,7 @@
 | Schedule | `00:20 UTC` daily |
 | Status | **LIVE** — `DRY_RUN=False` |
 | Repo | `https://github.com/stuartblair84-defi/dca-bot` |
-| Local path | `C:\Projects\dca-bot\` |
+| Local path | `C:\Users\stuar\StuartOS\50-personal\Personal Projects\dca-bot\` (moved into the vault 28 Jul 2026; the old `C:\Projects\dca-bot\` no longer exists) |
 
 **Hot wallet:** `0xd1F1a36B423Ea05e47fCB50F0b86fC5Dc3be3380` (Base)
 **Cold wallet:** `0xdBBB6ed92BDc8aFDfE8295b8504A73305d0ef8C0` (Base)
@@ -32,11 +32,11 @@ config.py          — all settings, budgets, thresholds, addresses
 signals.py         — F&G (Alternative.me) + RSI/MA200/liq proxy (Kraken OHLCV)
 dca_engine.py      — composite score, multiplier, pool/reserve logic
 state.py           — state.json r/w, month rollover, cumulative reserve carryover
-base_client.py     — Uniswap V3 approve → swap → transfer
+base_client.py     — RPC rotation/retry, Uniswap V3 approve → swap → transfer
 portfolio.py       — purchases.json, VWAP avg entry, unrealised PnL
 file_logger.py     — local CSV + MD logging (replaced Notion logger)
 telegram_bot.py    — short-poll, all /commands
-run_bot.py         — daily scheduler, run_once(), run_daemon()
+run_bot.py         — daily scheduler, run_once(), run_with_retry(), run_daemon()
 ```
 
 **Runtime files (VPS only, gitignored):**
@@ -46,7 +46,7 @@ run_bot.py         — daily scheduler, run_once(), run_daemon()
 ~/dca-bot/purchase_ledger.csv   — CSV log of all buys
 ~/dca-bot/daily_buy_log.md      — markdown log of all buys
 ~/dca-bot/funding_ledger.csv    — deposit history
-~/dca-bot/python/.env           — EVM_PRIVATE_KEY, COLD_WALLET, Telegram token
+~/dca-bot/python/.env           — BASE_RPC_URLS, EVM_PRIVATE_KEY, COLD_WALLET, Telegram token
 ```
 
 ---
@@ -57,13 +57,15 @@ run_bot.py         — daily scheduler, run_once(), run_daemon()
 MONTHLY_BUDGET        = 2000.0    # descriptive/reporting only — NOT enforced as a buy gate
 RESERVE_PCT           = 0.40
 DAILY_DRIP            = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30  # ~$40/day
-POOL_CAP_X            = 5.0       # base pool ceiling = ~$200
+POOL_CAP_X            = 5.0       # base pool ceiling = $200 — ALSO caps any single buy at $200
 USE_RESERVE           = True
 RESERVE_THRESHOLD     = 0.65
 RESERVE_MAX_MONTHS    = 6         # reserve ceiling = $4,800
 NO_BUY_ZONE           = False     # always buys, even on low scores
 NO_BUY_THRESHOLD      = 0.35     # dead config while NO_BUY_ZONE = False
 DRY_RUN               = False
+CYCLE_RETRY_ATTEMPTS  = 3         # cycle re-attempts, only when nothing was broadcast
+CYCLE_RETRY_DELAY_MIN = 15        # minutes between cycle attempts
 ```
 
 ---
@@ -97,9 +99,16 @@ DRY_RUN               = False
 | 0.20–0.34 | 0.5× | $20 | No | $20 |
 | 0.35–0.64 | 1.0× | $40 | No | $40 |
 | 0.65–0.79 | 4.0× | $40* | Yes | $160 |
-| ≥ 0.80 | 8.0× | $40* | Yes | $320 |
+| ≥ 0.80 | 8.0× | $40* | Yes | **$200** (not $320) |
 
 *base_amt capped by pool; reserve covers shortfall up to reserve_pool balance.
+
+> ⚠️ **Corrected 29 Jul 2026.** This table previously claimed a $320 max at the 8× tier.
+> It cannot reach that. `calc_buy_amount()` computes `target = min(DAILY_DRIP × multiplier,
+> DAILY_DRIP × POOL_CAP_X)`, and `POOL_CAP_X = 5.0` clips any single buy to $200. The 8×
+> multiplier therefore behaves as 5× in practice. The 4× tier is unaffected ($160 < $200).
+> To actually spend $320 on a top-tier day, POOL_CAP_X must rise to 8.0 or higher.
+> Verified against config.py + dca_engine.py, not assumed.
 
 > Strategy intent: flat daily DCA at low scores, step-change on high conviction (≥0.65).
 > Reserve unlocks at same threshold as 4× tier — designed alignment.
@@ -178,6 +187,12 @@ Month spent       : $0      (May just started at last update)
 - **DAILY_DRIP:** Never set directly — auto-derives from `MONTHLY_BUDGET`. No `/set daily_drip`.
 - **Monthly budget gate removed (Jun 2026):** MONTHLY_BUDGET was silently blocking buys after aggressive 8× spending stretch exhausted the $2,000 cap mid-month. Fixed: `dca_engine.calc_buy_amount()` no longer caps against remaining monthly budget. New live gate is hot wallet USDC balance, checked on-chain immediately before each swap. If balance < intended buy: cycle skips (drip carries), Telegram alert fires. Log messages now state the precise skip reason.
 - **No-buy log messages:** Each skip reason now logs distinctly — "No buy: insufficient hot wallet balance ($X available, $Y needed)", "No buy: pool empty — base $X, reserve $Y, score Z", "No buy: composite score below NO_BUY_THRESHOLD (if NO_BUY_ZONE enabled)".
+- **RPC provider rotation (Jul 2026):** A single hardcoded `BASE_RPC_URL` meant any endpoint-level fault killed the day's buy. Now `BASE_RPC_URLS` holds a comma-separated priority list; `base_client._rpc_call()` retries the current endpoint once, then rotates, exhausting the list before raising an error naming every endpoint and its status. Selection is **sticky** — once one answers the bot stays on it, so a known-blocked primary is not re-probed before every call. Rotation swaps `w3.provider` on the live `Web3` instance (web3 7.14.1 exposes `provider` as a property whose setter reassigns `manager.provider`), so the module-level contract objects follow automatically. Only transport faults rotate — HTTP {403,429,5xx}, connection errors, timeouts, `ProviderConnectionError`, and JSON-RPC rate-limit codes. Contract reverts and insufficient-funds errors propagate immediately, because retrying those on four endpoints just fails four times.
+- **Writes never rotate silently — the double-spend trap:** If `send_raw_transaction` fails at the transport level the tx may already be in a mempool. Re-signing or re-fetching the nonce there would create a SECOND valid transaction and could buy twice. `_resolve_ambiguous_broadcast()` instead uses the fact that the signed tx hash is known *before* broadcast: rotate to a healthy endpoint, poll `eth_getTransactionReceipt` for that exact hash for 90s, and only then re-broadcast the **identical signed bytes** (idempotent — same nonce, same hash). If still unresolved it raises `AmbiguousBroadcastError` carrying the hash so the alert says "verify on Basescan" rather than the bot guessing. The pre-existing nonce-too-low retry is untouched and is safe, because a JSON-RPC rejection means the node received and rejected it.
+- **Cycle retry gated on broadcast (Jul 2026):** `run_with_retry()` re-attempts up to `CYCLE_RETRY_ATTEMPTS` times, `CYCLE_RETRY_DELAY_MIN` apart, **only when nothing was broadcast**. If anything hit the wire it stops immediately regardless of attempts left. Only the final attempt alerts; intermediate ones log at WARNING, because three alerts for one bad morning trains you to ignore the channel.
+- **Drip is idempotent per UTC day:** `state.drip_pool()` was unconditional, so the new cycle retry would have dripped the pool 3× on a bad morning. Now guarded by a `last_drip_date` field in state.json. Side effect, and the correct behaviour: a manual `python run_bot.py` on a day the scheduler already ran no longer adds a second drip.
+- **RPC URLs are redacted in logs and alerts:** the Alchemy primary carries an API key in its path. `base_client._redact()` strips it before anything reaches journalctl or Telegram.
+- **8× tier cannot spend $320:** `POOL_CAP_X = 5.0` clips every single buy to `5 × DAILY_DRIP = $200`, so the top multiplier behaves as 5×. Documented wrong in this file until 29 Jul 2026. Raise POOL_CAP_X to 8.0 if the 8× tier is meant to be real.
 - **Claude Code git discipline:** Always include "Commit all changes and push to GitHub origin main" in prompts. Omitting this leaves changes local only.
 - **CVE-2026-31431 "Copy Fail" (May 2026):** Local privilege escalation in kernel `algif_aead` module. Mitigation applied: `algif_aead` blacklisted via `/etc/modprobe.d/disable-algif.conf`. Safe — does not affect dca-bot. Once Debian releases patched kernel: `sudo apt update && sudo apt upgrade -y`, reboot, then remove `/etc/modprobe.d/disable-algif.conf`. Track: https://security-tracker.debian.org/tracker/CVE-2026-31431
 
@@ -198,4 +213,11 @@ Month spent       : $0      (May just started at last update)
 > Append timestamped notes during each session. Clear when stale.
 
 - 1 Jun 2026: Updated multiplier tiers — new config: 0.5× (<0.35), 1.0× (0.35–0.64), 4.0× (0.65–0.79), 8.0× (≥0.80). NO_BUY_ZONE set to False. Strategy: flat daily DCA + heavy reserve deployment on high-conviction signals. Deployed to VPS via git push/pull.
+- 29 Jul 2026: **Cycle failed, no buy.** `403 Client Error: Forbidden for url: https://base-rpc.publicnode.com/` raised by web3's HTTPProvider, caught by the blanket `except Exception` in `run_once()`, alerted via `send_cycle_error_alert()`. Not rate limiting — 403 is an IP-level block from PublicNode's edge and will recur until `BASE_RPC_URL` changes. Endpoint confirmed healthy from a different network the same morning, so it is the VPS source IP, not an outage. Drip persisted correctly (state saved before buy attempt), so the day carries forward. **FIXED same day** — all three open issues closed:
+  - (a) `BASE_RPC_URLS` priority list + sticky retry/rotate in `base_client._rpc_call()`, wrapping every read (`balanceOf`, `allowance`, `slot0`, quoter, `get_block`, `max_priority_fee`, `getTransactionCount`, `estimateGas`, receipts). Writes deliberately excluded — see the double-spend note in KNOWN FIXES.
+  - (b) `run_bot.run_with_retry()` — 3 attempts, 15 min apart, gated on nothing having been broadcast. Scheduler and the default CLI entry point now call it; `--no-retry` gives the old single-attempt behaviour.
+  - (c) `send_cycle_error_alert()` now takes `stage`, `broadcast`, `confirmed` and `tx_hash`, and reports three distinct outcomes (nothing broadcast / broadcast+confirmed / broadcast+unknown). `run_once()` tracks a stage through `state → signals → engine → preflight_balance → approve → swap → post_swap_read → transfer → record → summary` and returns an outcome dict.
+  - Endpoints verified live by `eth_chainId == 0x2105`: `mainnet.base.org`, `base.drpc.org`, `base.meowrpc.com`, `1rpc.io/base`, `base-mainnet.public.blastapi.io` all PASS. **`base.llamarpc.com` returns HTTP 521 and was dropped** from the proposed rotation list. `base-rpc.publicnode.com` answered fine from a home network, confirming the 403 is specific to the VPS source IP.
+  - Tested with `DRY_RUN=True`: full cycle; rotation past a 403 + dead-DNS head endpoint; total exhaustion (error names all four endpoints and statuses, alert reports `preflight_balance` with no broadcast); 3-attempt retry with exactly one drip and one alert; and two ambiguous-broadcast cases proving the tx is signed exactly once. `DRY_RUN` returned to `False`.
+  - Also fixed: an `UnboundLocalError` in `_rpc_call` (missing `global _active_idx`), and the config comment claiming a ~$50 pool ceiling when it is $200.
 - 18 Jun 2026: Replaced monthly-budget buy gate with hot-wallet USDC balance check. Root cause: 8× spending Jun 2–6 exhausted $2k cap on Jun 13; bot sat out Jun 14–17 despite scores 0.53–0.62. Fix: removed MONTHLY_BUDGET cap from dca_engine.calc_buy_amount(); added on-chain balance preflight in run_bot.run_once() before each swap; added send_low_balance_alert() Telegram alert; fixed all no-buy log messages to state exact reason.
