@@ -5,8 +5,11 @@
 # ─────────────────────────────────────────────
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
+
+log = logging.getLogger("dca-bot")
 
 from config import (
     DAILY_DRIP,
@@ -24,9 +27,10 @@ _DEFAULT_STATE: dict = {
     "month_spent":  0.0,   # USD spent this calendar month
     "base_pool":    0.0,   # accumulated unspent drip budget (non-reserve)
     "reserve_pool": 0.0,   # cumulative reserve — grows monthly, never resets
-    "last_run":     None,  # ISO-8601 UTC string of last execution
-    "last_month":   None,  # "YYYY-MM" of last known month
-    "paused":       False, # set True via /pause Telegram command
+    "last_run":       None,  # ISO-8601 UTC string of last execution
+    "last_month":     None,  # "YYYY-MM" of last known month
+    "last_drip_date": None,  # "YYYY-MM-DD" UTC of the last drip — idempotency guard
+    "paused":         False, # set True via /pause Telegram command
 }
 
 
@@ -54,9 +58,22 @@ def drip_pool(state: dict) -> dict:
 
     Call once per scheduled execution before calc_buy_amount().
     The cap prevents runaway accumulation during skipped or paused days.
+
+    Idempotent per UTC day. The cycle-level retry in run_bot re-enters
+    run_once(), which would otherwise drip a second (and third) time for the
+    same day and inflate the pool on every transient RPC fault. Guarding on the
+    date rather than on a retry counter also makes a manual `python run_bot.py`
+    on a day the scheduler already ran a no-op for the pool, which is the
+    correct reading of "one day's budget" anyway.
     """
-    pool_ceiling       = DAILY_DRIP * POOL_CAP_X
-    state["base_pool"] = min(state["base_pool"] + DAILY_DRIP, pool_ceiling)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if state.get("last_drip_date") == today:
+        log.info(f"Drip already applied for {today} — pool unchanged (${state['base_pool']:.2f})")
+        return state
+
+    pool_ceiling            = DAILY_DRIP * POOL_CAP_X
+    state["base_pool"]      = min(state["base_pool"] + DAILY_DRIP, pool_ceiling)
+    state["last_drip_date"] = today
     return state
 
 

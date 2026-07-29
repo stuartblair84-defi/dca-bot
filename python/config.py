@@ -12,7 +12,7 @@ RESERVE_PCT    = 0.40                                     # 40% of budget held i
 DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$40.00/day (non-reserve)
 
 # ── Pool pacing ───────────────────────────────
-POOL_CAP_X = 5.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$50.00)
+POOL_CAP_X = 5.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$200.00)
 
 # ── Reserve mode ─────────────────────────────
 USE_RESERVE        = True   # hold back RESERVE_PCT of budget for high-signal days
@@ -62,6 +62,17 @@ CHAIN_ID = 8453         # Base mainnet
 
 # ── Execution ────────────────────────────────
 EXECUTION_TIME_UTC = "00:20"
+
+# ── Cycle retry ──────────────────────────────
+# Gates the cycle-level re-attempt in run_bot.run_with_retry(). Without it a
+# single transient RPC fault costs a full 24 hours, because the scheduler fires
+# run_once() once a day and nothing re-attempts.
+#
+# Retries fire ONLY when no transaction was broadcast. If anything hit the wire,
+# the cycle stops and alerts regardless of attempts remaining — retrying after a
+# partial buy is how you end up buying twice in one day.
+CYCLE_RETRY_ATTEMPTS = 3    # total attempts per cycle, including the first
+CYCLE_RETRY_DELAY_MIN = 15  # minutes to wait between attempts
 
 # ── Kraken symbol for BTC (proxy for cbBTC) ──
 KRAKEN_BTC_SYMBOL  = "XBTUSD"

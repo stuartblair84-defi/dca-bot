@@ -961,17 +961,56 @@ def send_low_balance_alert(available: float, needed: float) -> None:
     _standalone_send(text)
 
 
-def send_cycle_error_alert(error: str) -> None:
+def send_cycle_error_alert(
+    error:      str,
+    stage:      str  = "unknown",
+    broadcast:  bool = False,
+    confirmed:  bool = False,
+    tx_hash:    str  = "",
+) -> None:
     """Send a critical alert when run_once() raises an unhandled exception.
+
+    The old version asserted "No buy was made" unconditionally, which it never
+    actually checked. run_once() now tracks which stage it reached and whether
+    anything hit the wire, so this reports what is known rather than what is
+    convenient. Three distinct outcomes:
+
+      * nothing broadcast          — safe, names the stage that failed
+      * broadcast and confirmed    — a buy happened, then something after it broke
+      * broadcast, outcome unknown — the one that needs eyes on Basescan
 
     Standalone — works whether or not the polling bot is running.
     """
+    tx_line = ""
+    if tx_hash:
+        tx_display = tx_hash if tx_hash.startswith("0x") else f"0x{tx_hash}"
+        tx_line    = f"Tx: <code>{tx_display}</code>\n"
+
+    if not broadcast:
+        headline = "🔴 DCA Cycle ERROR — Action Required"
+        verdict  = f"No transaction was broadcast.  Failed at: <b>{stage}</b>."
+    elif confirmed:
+        headline = "🔴 DCA Cycle ERROR — Buy Completed, Cycle Failed"
+        verdict  = (
+            f"A transaction was broadcast and confirmed before the failure.\n"
+            f"Check /report and Basescan.  Failed at: <b>{stage}</b>."
+        )
+    else:
+        headline = "🔴 DCA Cycle ERROR — Verify On Chain"
+        verdict  = (
+            f"⚠️ A transaction may have been broadcast.\n"
+            f"Verify on Basescan before re-running.  Failed at: <b>{stage}</b>."
+        )
+
     text = (
-        f"<b>🔴 DCA Cycle ERROR — Action Required</b>\n"
+        f"<b>{headline}</b>\n"
         f"\n"
         f"Error: <code>{error}</code>\n"
         f"\n"
-        f"No buy was made.  Check VPS logs:\n"
+        f"{tx_line}"
+        f"{verdict}\n"
+        f"\n"
+        f"Check VPS logs:\n"
         f"<code>journalctl -u dca-bot --since \"today\" --no-pager</code>"
     )
     _standalone_send(text)
