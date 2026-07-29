@@ -39,6 +39,19 @@ telegram_bot.py    — short-poll, all /commands
 run_bot.py         — daily scheduler, run_once(), run_with_retry(), run_daemon()
 ```
 
+**Notes and docs:**
+```
+README.md                        — what the bot is, how the decision works. Start here
+notes/operations.md              — day-to-day VPS commands: health, ledgers, deploys, deposits
+notes/smart-dca-logic-brief.md   — strategy thinking behind the scoring model
+```
+
+> [!note] One project, one folder (29 Jul 2026)
+> An empty `Personal Projects/Smart DCA Bot/` used to sit alongside this repo, and the
+> vault's routing table listed both, so half the time a session hunting for the DCA work
+> landed in an empty directory. It is gone. Everything lives here, notes included, per
+> `50-personal/CLAUDE.md`: code in the repo, thinking in `notes/`, not copied out.
+
 **Runtime files (VPS only, gitignored):**
 ```
 ~/dca-bot/state.json            — base_pool, reserve_pool, month_spent, paused
@@ -176,13 +189,26 @@ Month spent       : $0      (May just started at last update)
 
 ## FUNDING HISTORY
 
+> ⚠️ **`funding_ledger.csv` on the VPS is the source of truth, not this table.**
+> This table drifted two deposits behind between May and July 2026 because it is
+> hand-maintained and nothing reconciles it. Read it for orientation, never for a number.
+> `/funding` on Telegram computes from the CSV and is always current.
+
 | Date | Amount | Notes |
 |------|--------|-------|
 | 2026-03-26 | $10.00 | Initial seed |
 | 2026-03-27 | $91.00 | Top-up |
 | 2026-04-01 | $2,000.00 | April funding |
 | 2026-05-01 | $1,000.00 | May top-up |
-| **Total** | **$3,101.00** | |
+| 2026-06-01 | $1,000.00 | June top-up |
+| 2026-07-03 | $2,000.00 | July top-up — logged late on 29 Jul, verified on-chain |
+| **Total** | **$6,101.00** | as at 29 Jul 2026 |
+
+> [!warning] `log_deposit()` stamps today's date, not the deposit's
+> `file_logger.log_deposit()` writes `datetime.now()` into the `date` column, so a
+> deposit logged any day after it landed is filed under the wrong date. The July row
+> above was appended by hand with the real on-chain date for that reason. Worth fixing
+> by giving `log_deposit()` an optional date argument.
 
 ---
 
