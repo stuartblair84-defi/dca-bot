@@ -57,7 +57,7 @@ run_bot.py         — daily scheduler, run_once(), run_with_retry(), run_daemon
 MONTHLY_BUDGET        = 2000.0    # descriptive/reporting only — NOT enforced as a buy gate
 RESERVE_PCT           = 0.40
 DAILY_DRIP            = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30  # ~$40/day
-POOL_CAP_X            = 5.0       # base pool ceiling = $200 — ALSO caps any single buy at $200
+POOL_CAP_X            = 8.0       # base pool ceiling = $320 — ALSO caps any single buy at $320
 USE_RESERVE           = True
 RESERVE_THRESHOLD     = 0.65
 RESERVE_MAX_MONTHS    = 6         # reserve ceiling = $4,800
@@ -99,16 +99,23 @@ CYCLE_RETRY_DELAY_MIN = 15        # minutes between cycle attempts
 | 0.20–0.34 | 0.5× | $20 | No | $20 |
 | 0.35–0.64 | 1.0× | $40 | No | $40 |
 | 0.65–0.79 | 4.0× | $40* | Yes | $160 |
-| ≥ 0.80 | 8.0× | $40* | Yes | **$200** (not $320) |
+| ≥ 0.80 | 8.0× | $40* | Yes | $320 |
 
 *base_amt capped by pool; reserve covers shortfall up to reserve_pool balance.
 
-> ⚠️ **Corrected 29 Jul 2026.** This table previously claimed a $320 max at the 8× tier.
-> It cannot reach that. `calc_buy_amount()` computes `target = min(DAILY_DRIP × multiplier,
-> DAILY_DRIP × POOL_CAP_X)`, and `POOL_CAP_X = 5.0` clips any single buy to $200. The 8×
-> multiplier therefore behaves as 5× in practice. The 4× tier is unaffected ($160 < $200).
-> To actually spend $320 on a top-tier day, POOL_CAP_X must rise to 8.0 or higher.
-> Verified against config.py + dca_engine.py, not assumed.
+> ⚠️ **Resolved 29 Jul 2026 — read before changing POOL_CAP_X again.**
+> `calc_buy_amount()` computes `target = min(DAILY_DRIP × multiplier, DAILY_DRIP × POOL_CAP_X)`,
+> so `POOL_CAP_X` silently caps every single buy as well as the pool ceiling. At `5.0` it
+> clipped the top tier to $200 and the 8× multiplier behaved as 5×, which this table claimed
+> wrongly for months. Raised to `8.0` the same day, so $320 above is now reachable and true.
+> The 4× tier was never affected ($160 < either cap).
+>
+> The number that actually moved is reserve burn. `NO_BUY_ZONE` is False, so the bot buys
+> daily and `base_pool` rarely accumulates past one day's drip. A top-tier day therefore
+> draws ~$280 from reserve rather than ~$160. At a $4,800 reserve ceiling that is roughly
+> 15 sustained extreme-fear days of ammunition instead of 24. Deliberate, not incidental.
+>
+> Verified against config.py + dca_engine.py + state.py, not assumed.
 
 > Strategy intent: flat daily DCA at low scores, step-change on high conviction (≥0.65).
 > Reserve unlocks at same threshold as 4× tier — designed alignment.
@@ -192,7 +199,7 @@ Month spent       : $0      (May just started at last update)
 - **Cycle retry gated on broadcast (Jul 2026):** `run_with_retry()` re-attempts up to `CYCLE_RETRY_ATTEMPTS` times, `CYCLE_RETRY_DELAY_MIN` apart, **only when nothing was broadcast**. If anything hit the wire it stops immediately regardless of attempts left. Only the final attempt alerts; intermediate ones log at WARNING, because three alerts for one bad morning trains you to ignore the channel.
 - **Drip is idempotent per UTC day:** `state.drip_pool()` was unconditional, so the new cycle retry would have dripped the pool 3× on a bad morning. Now guarded by a `last_drip_date` field in state.json. Side effect, and the correct behaviour: a manual `python run_bot.py` on a day the scheduler already ran no longer adds a second drip.
 - **RPC URLs are redacted in logs and alerts:** the Alchemy primary carries an API key in its path. `base_client._redact()` strips it before anything reaches journalctl or Telegram.
-- **8× tier cannot spend $320:** `POOL_CAP_X = 5.0` clips every single buy to `5 × DAILY_DRIP = $200`, so the top multiplier behaves as 5×. Documented wrong in this file until 29 Jul 2026. Raise POOL_CAP_X to 8.0 if the 8× tier is meant to be real.
+- **POOL_CAP_X caps single buys, not just the pool:** `calc_buy_amount()` clips every buy at `DAILY_DRIP × POOL_CAP_X`, so this one constant governs both the `base_pool` ceiling in `state.py` and the maximum any single purchase can reach. At `5.0` it silently clipped the 8× tier to $200 and this file documented $320 wrongly for months. Raised to `8.0` on 29 Jul 2026 so the top tier is real. If it is ever changed again, the multiplier tiers change with it whether or not that was the intent, and the reserve burn rate on high-conviction days moves with it too.
 - **Claude Code git discipline:** Always include "Commit all changes and push to GitHub origin main" in prompts. Omitting this leaves changes local only.
 - **CVE-2026-31431 "Copy Fail" (May 2026):** Local privilege escalation in kernel `algif_aead` module. Mitigation applied: `algif_aead` blacklisted via `/etc/modprobe.d/disable-algif.conf`. Safe — does not affect dca-bot. Once Debian releases patched kernel: `sudo apt update && sudo apt upgrade -y`, reboot, then remove `/etc/modprobe.d/disable-algif.conf`. Track: https://security-tracker.debian.org/tracker/CVE-2026-31431
 

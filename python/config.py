@@ -12,7 +12,15 @@ RESERVE_PCT    = 0.40                                     # 40% of budget held i
 DAILY_DRIP     = MONTHLY_BUDGET * (1 - RESERVE_PCT) / 30 # base drip ~$40.00/day (non-reserve)
 
 # ── Pool pacing ───────────────────────────────
-POOL_CAP_X = 5.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$200.00)
+POOL_CAP_X = 8.0   # base_pool ceiling = POOL_CAP_X × DAILY_DRIP (~$320.00)
+                   # Double duty, deliberately: this also caps any SINGLE buy at
+                   # the same figure via dca_engine.calc_buy_amount(). Raised from
+                   # 5.0 to 8.0 on 29 Jul 2026 so the 8× tier can actually spend
+                   # 8 × DAILY_DRIP. Because NO_BUY_ZONE is False the bot buys
+                   # daily and base_pool rarely accumulates, so a top-tier day is
+                   # funded mostly from reserve: ~$280 of the $320, up from ~$160
+                   # of $200. That is the real effect of this line — reserve burn
+                   # rate on extreme-fear days, not the headline multiplier.
 
 # ── Reserve mode ─────────────────────────────
 USE_RESERVE        = True   # hold back RESERVE_PCT of budget for high-signal days

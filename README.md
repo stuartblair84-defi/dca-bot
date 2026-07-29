@@ -28,16 +28,18 @@ budget spread over 30 days).
 | 0.00 – 0.34 | 0.5× | $20 | No | $20 |
 | 0.35 – 0.64 | 1.0× | $40 | No | $40 |
 | 0.65 – 0.79 | 4.0× | $160 | Yes | $160 |
-| ≥ 0.80 | 8.0× | $320, clipped to $200 | Yes | $200 |
+| ≥ 0.80 | 8.0× | $320 | Yes | $320 |
 
-That last row is worth reading twice. `POOL_CAP_X = 5.0` caps any single purchase at
-`5 × DAILY_DRIP = $200`, so the 8× tier can never actually spend 8× the drip. The
-multiplier and the cap disagree, and the cap wins.
+One non-obvious thing about that table: `POOL_CAP_X` caps any single purchase at
+`POOL_CAP_X × DAILY_DRIP`, not just the pool it is named after. It is set to `8.0` so
+the top tier is reachable. At its previous value of `5.0` the 8× multiplier silently
+behaved as 5×, because the cap wins over the multiplier and nothing warned about it.
+Change that constant and the tier table changes with it.
 
 The intent is a flat daily DCA most of the time, with a step change on high conviction.
 
 **Pools.** Each cycle drips `DAILY_DRIP` into a `base_pool` that accumulates on days the
-bot does not spend it, capped at $200. The remaining 40% of the monthly budget accrues
+bot does not spend it, capped at $320. The remaining 40% of the monthly budget accrues
 into a `reserve_pool` that is topped up on each month rollover, never resets, and is
 capped at six months' worth. The reserve only unlocks when the composite score clears
 `RESERVE_THRESHOLD` (0.65) — deliberately the same threshold as the 4× tier.
